@@ -1,0 +1,26 @@
+name: LocXXApp
+options:
+  bundleIdPrefix: com.locxx
+  deploymentTarget:
+    iOS: "15.0"
+packages:
+  BluetoothGaming:
+    path: ../BluetoothGaming
+  LocXXRules:
+    path: ../LocXXRules
+targets:
+  LocXXApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: BluetoothGaming
+        product: BluetoothGaming
+      - package: LocXXRules
+        product: LocXXRules
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.locxx.app
+        INFOPLIST_FILE: Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"

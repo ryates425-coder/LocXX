@@ -1,0 +1,14 @@
+// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "BluetoothGaming",
+    platforms: [.iOS(.v15), .macOS(.v12)],
+    products: [
+        .library(name: "BluetoothGaming", targets: ["BluetoothGaming"]),
+    ],
+    targets: [
+        .target(name: "BluetoothGaming", dependencies: []),
+        .testTarget(name: "BluetoothGamingTests", dependencies: ["BluetoothGaming"]),
+    ]
+)

@@ -1,0 +1,17 @@
+# Android
+android/.idea/
+android/.gradle/
+android/build/
+android/**/build/
+android/local.properties
+*.iml
+.kotlin/
+
+# Xcode
+ios/**/DerivedData/
+ios/**/*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# Swift PM
+ios/**/.build/
+.swiftpm/

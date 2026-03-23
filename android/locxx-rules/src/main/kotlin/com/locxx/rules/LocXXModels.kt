@@ -30,10 +30,13 @@ fun rowValues(row: RowId): IntArray = when (row) {
 }
 
 data class PlayerRowState(
-    val lastCrossedIndex: Int = -1,
-    val crossCount: Int = 0,
+    /** Indices along [rowValues] that have been crossed (paper-accurate; gaps = skipped). */
+    val crossedIndices: Set<Int> = emptySet(),
     val locked: Boolean = false
-)
+) {
+    val crossCount: Int get() = crossedIndices.size
+    val maxCrossedIndex: Int get() = crossedIndices.maxOrNull() ?: -1
+}
 
 data class PlayerSheet(
     val rows: Map<RowId, PlayerRowState> = enumValues<RowId>().associateWith { PlayerRowState() },

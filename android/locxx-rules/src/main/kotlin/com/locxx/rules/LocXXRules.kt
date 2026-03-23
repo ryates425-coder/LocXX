@@ -24,17 +24,80 @@ object LocXXRules {
         return total
     }
 
+    /** Points from one color row (0 if that row has no crosses). Matches [totalScore] row contributions. */
+    fun rowPoints(sheet: PlayerSheet, row: RowId): Int {
+        val st = sheet.rows[row] ?: return 0
+        if (st.crossCount == 0) return 0
+        return pointsForCrosses(st.crossCount)
+    }
+
+    fun isValueCrossed(row: RowId, state: PlayerRowState, value: Int): Boolean {
+        val values = rowValues(row)
+        val idx = values.indexOf(value)
+        if (idx < 0) return false
+        return idx in state.crossedIndices
+    }
+
+    /**
+     * Paper Qwixx: numbers strictly left of the rightmost cross that were never crossed
+     * (passed over when you marked farther right first).
+     */
+    fun isValueSkipped(row: RowId, state: PlayerRowState, value: Int): Boolean {
+        val values = rowValues(row)
+        val idx = values.indexOf(value)
+        if (idx < 0) return false
+        val max = state.maxCrossedIndex
+        if (max < 0) return false
+        return idx < max && idx !in state.crossedIndices
+    }
+
     /** Whether [value] may be crossed in [row] given current progress (Qwixx left-to-right rule). */
     fun canCrossValue(row: RowId, state: PlayerRowState, value: Int): Boolean {
         if (state.locked) return false
         val values = rowValues(row)
         val idx = values.indexOf(value)
         if (idx < 0) return false
+        if (idx in state.crossedIndices) return false
+        val max = state.maxCrossedIndex
+        // Strictly left of the rightmost cross without a mark = paper skipped (dead).
+        if (max >= 0 && idx <= max) return false
         val lastIdx = values.lastIndex
         val isLast = idx == lastIdx
-        if (state.lastCrossedIndex >= 0 && idx <= state.lastCrossedIndex) return false
         if (isLast && state.crossCount < 5) return false
         return true
+    }
+
+    /**
+     * The row's rightmost sheet cell (12 on red/yellow, 2 on green/blue), which may only be crossed
+     * after five marks in that row — not strikethrough "skipped" territory while still waiting.
+     */
+    fun isLockingCell(row: RowId, state: PlayerRowState, value: Int): Boolean {
+        if (state.locked) return false
+        val values = rowValues(row)
+        val idx = values.indexOf(value)
+        if (idx < 0) return false
+        return idx == values.lastIndex && state.crossCount < 5
+    }
+
+    /**
+     * After five crosses in this row, the lock cell (12 on red/yellow, 2 on green/blue) may be marked
+     * to lock the row — use for UI emphasis on that cell only.
+     */
+    fun isLockCellReadyToMark(row: RowId, state: PlayerRowState, value: Int): Boolean {
+        val values = rowValues(row)
+        val idx = values.indexOf(value)
+        if (idx < 0 || idx != values.lastIndex) return false
+        if (state.locked) return false
+        if (state.crossCount < 5) return false
+        return canCrossValue(row, state, value)
+    }
+
+    /** True on the row's lock cell (12 on red/yellow, 2 on green/blue) after the row has been locked. */
+    fun isLockCellLocked(row: RowId, state: PlayerRowState, value: Int): Boolean {
+        if (!state.locked) return false
+        val values = rowValues(row)
+        val idx = values.indexOf(value)
+        return idx >= 0 && idx == values.lastIndex
     }
 
     fun applyCross(
@@ -49,8 +112,7 @@ object LocXXRules {
         val locks = idx == lastIdx
         return Result.success(
             state.copy(
-                lastCrossedIndex = idx,
-                crossCount = state.crossCount + 1,
+                crossedIndices = state.crossedIndices + idx,
                 locked = state.locked || locks
             )
         )

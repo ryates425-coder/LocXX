@@ -30,15 +30,18 @@ public func rowValues(_ row: RowId) -> [Int] {
 }
 
 public struct PlayerRowState: Equatable, Sendable {
-    public var lastCrossedIndex: Int
-    public var crossCount: Int
+    /// Indices along `rowValues` that have been crossed (paper-accurate; gaps = skipped).
+    public var crossedIndices: Set<Int>
     public var locked: Bool
 
-    public init(lastCrossedIndex: Int = -1, crossCount: Int = 0, locked: Bool = false) {
-        self.lastCrossedIndex = lastCrossedIndex
-        self.crossCount = crossCount
+    public init(crossedIndices: Set<Int> = [], locked: Bool = false) {
+        self.crossedIndices = crossedIndices
         self.locked = locked
     }
+
+    public var crossCount: Int { crossedIndices.count }
+
+    public var maxCrossedIndex: Int { crossedIndices.max() ?? -1 }
 }
 
 public struct PlayerSheet: Equatable, Sendable {

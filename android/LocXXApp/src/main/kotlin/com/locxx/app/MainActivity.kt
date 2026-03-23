@@ -5,7 +5,9 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.core.view.WindowCompat
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -25,6 +27,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,10 +58,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Required on many Samsung devices or WindowInsets stay 0 in Compose.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
+        enableEdgeToEdge()
         permissionLauncher.launch(permissions)
         setContent {
             MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
+                Surface(
+                    Modifier
+                        .fillMaxSize()
+                        .safeAreaPadding()
+                ) {
                     LocXXScreen()
                 }
             }
@@ -69,11 +83,26 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
     var name by remember { mutableStateOf("Player") }
+    var singlePlayerGameOpen by remember { mutableStateOf(false) }
     val log by vm.log.collectAsState()
     val peers by vm.peers.collectAsState()
     val match by vm.match.collectAsState()
     val lastRoll by vm.lastRoll.collectAsState()
     val role by vm.role.collectAsState()
+
+    LaunchedEffect(role) {
+        if (role != LocXXViewModel.Role.SinglePlayer) {
+            singlePlayerGameOpen = false
+        }
+    }
+
+    if (singlePlayerGameOpen && role == LocXXViewModel.Role.SinglePlayer) {
+        SinglePlayerGameScreen(
+            vm = vm,
+            onExit = { singlePlayerGameOpen = false }
+        )
+        return
+    }
 
     val isLandscape =
         LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -102,7 +131,8 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
                     match = match,
                     lastRoll = lastRoll,
                     role = role,
-                    includeSinglePlayerSection = false
+                    includeSinglePlayerSection = false,
+                    onOpenSinglePlayerGame = { singlePlayerGameOpen = true }
                 )
             }
             SinglePlayerSection(
@@ -110,7 +140,8 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
                 modifier = Modifier
                     .weight(0.66f)
                     .fillMaxHeight()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState()),
+                onOpenGameBoard = { singlePlayerGameOpen = true }
             )
         }
     } else {
@@ -130,7 +161,8 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
                 match = match,
                 lastRoll = lastRoll,
                 role = role,
-                includeSinglePlayerSection = true
+                includeSinglePlayerSection = true,
+                onOpenSinglePlayerGame = { singlePlayerGameOpen = true }
             )
         }
     }
@@ -146,7 +178,8 @@ private fun LocXXMenuBlock(
     match: MatchState?,
     lastRoll: DiceRoll?,
     role: LocXXViewModel.Role?,
-    includeSinglePlayerSection: Boolean
+    includeSinglePlayerSection: Boolean,
+    onOpenSinglePlayerGame: () -> Unit
 ) {
     Text("LocXX", style = MaterialTheme.typography.headlineMedium)
     OutlinedTextField(
@@ -185,7 +218,7 @@ private fun LocXXMenuBlock(
         }
     }
     if (includeSinglePlayerSection && role == LocXXViewModel.Role.SinglePlayer) {
-        SinglePlayerSection(vm)
+        SinglePlayerSection(vm, onOpenGameBoard = onOpenSinglePlayerGame)
     }
     if (role != LocXXViewModel.Role.SinglePlayer) {
         lastRoll?.let { r ->

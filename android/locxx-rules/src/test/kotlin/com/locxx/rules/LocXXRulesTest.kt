@@ -15,12 +15,45 @@ class LocXXRulesTest {
     }
 
     @Test
+    fun rowPointsEmptyRowZero() {
+        val sheet = PlayerSheet()
+        assertEquals(0, LocXXRules.rowPoints(sheet, RowId.RED))
+    }
+
+    @Test
+    fun rowPointsMatchesCrossCount() {
+        var st = PlayerRowState()
+        val r = rowValues(RowId.RED)
+        for (i in 0 until 4) {
+            st = LocXXRules.applyCross(RowId.RED, st, r[i]).getOrThrow()
+        }
+        val rows = enumValues<RowId>().associateWith { PlayerRowState() }.toMutableMap()
+        rows[RowId.RED] = st
+        val sheet = PlayerSheet(rows = rows)
+        assertEquals(LocXXRules.pointsForCrosses(4), LocXXRules.rowPoints(sheet, RowId.RED))
+        val sumRows = RowId.entries.sumOf { LocXXRules.rowPoints(sheet, it) }
+        assertEquals(LocXXRules.totalScore(sheet), sumRows - sheet.penalties * 5)
+    }
+
+    @Test
     fun redRowLeftToRight() {
         val s0 = PlayerRowState()
         assertTrue(LocXXRules.canCrossValue(RowId.RED, s0, 5))
         val s1 = LocXXRules.applyCross(RowId.RED, s0, 5).getOrThrow()
+        assertEquals(setOf(3), s1.crossedIndices)
+        assertTrue(LocXXRules.isValueSkipped(RowId.RED, s1, 4))
+        assertTrue(LocXXRules.isValueCrossed(RowId.RED, s1, 5))
         assertFalse(LocXXRules.canCrossValue(RowId.RED, s1, 4))
         assertTrue(LocXXRules.canCrossValue(RowId.RED, s1, 7))
+    }
+
+    @Test
+    fun paperSkippedLeftOfRightmostCross() {
+        val s0 = PlayerRowState()
+        val s1 = LocXXRules.applyCross(RowId.RED, s0, 9).getOrThrow()
+        assertEquals(setOf(7), s1.crossedIndices)
+        assertTrue(LocXXRules.isValueSkipped(RowId.RED, s1, 5))
+        assertFalse(LocXXRules.isValueSkipped(RowId.RED, s1, 9))
     }
 
     @Test
@@ -33,6 +66,49 @@ class LocXXRulesTest {
         assertTrue(LocXXRules.canCrossValue(RowId.RED, st, 12))
         st = LocXXRules.applyCross(RowId.RED, st, 12).getOrThrow()
         assertTrue(st.locked)
+        assertEquals(setOf(0, 1, 2, 3, 4, 10), st.crossedIndices)
+    }
+
+    @Test
+    fun lockCellReadyToMarkGlowsAfterFiveCrosses() {
+        var st = PlayerRowState()
+        val values = rowValues(RowId.RED)
+        for (i in 0 until 5) {
+            st = LocXXRules.applyCross(RowId.RED, st, values[i]).getOrThrow()
+        }
+        assertTrue(LocXXRules.isLockCellReadyToMark(RowId.RED, st, 12))
+        assertFalse(LocXXRules.isLockCellReadyToMark(RowId.RED, st, 11))
+    }
+
+    @Test
+    fun lockCellLockedShowsLockIconTarget() {
+        var st = PlayerRowState()
+        val values = rowValues(RowId.RED)
+        for (i in 0 until 5) {
+            st = LocXXRules.applyCross(RowId.RED, st, values[i]).getOrThrow()
+        }
+        assertFalse(LocXXRules.isLockCellLocked(RowId.RED, st, 12))
+        st = LocXXRules.applyCross(RowId.RED, st, 12).getOrThrow()
+        assertTrue(st.locked)
+        assertTrue(LocXXRules.isLockCellLocked(RowId.RED, st, 12))
+        assertFalse(LocXXRules.isLockCellLocked(RowId.RED, st, 11))
+    }
+
+    @Test
+    fun isLockingCell_lastSheetCellUntilFiveCrosses() {
+        val fresh = PlayerRowState()
+        assertTrue(LocXXRules.isLockingCell(RowId.RED, fresh, 12))
+        assertFalse(LocXXRules.isLockingCell(RowId.RED, fresh, 11))
+        assertTrue(LocXXRules.isLockingCell(RowId.GREEN, fresh, 2))
+        var st = fresh
+        val reds = rowValues(RowId.RED)
+        for (i in 0 until 5) {
+            st = LocXXRules.applyCross(RowId.RED, st, reds[i]).getOrThrow()
+        }
+        assertFalse(LocXXRules.isLockingCell(RowId.RED, st, 12))
+        st = LocXXRules.applyCross(RowId.RED, st, 12).getOrThrow()
+        assertTrue(st.locked)
+        assertFalse(LocXXRules.isLockingCell(RowId.RED, st, 12))
     }
 
     @Test

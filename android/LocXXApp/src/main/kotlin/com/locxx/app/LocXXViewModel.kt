@@ -36,7 +36,11 @@ import com.locxx.rules.MatchState
 
 import com.locxx.rules.RollResolutionState
 
+import com.locxx.rules.RowId
+
 import com.locxx.rules.initialMatchState
+
+import kotlin.collections.ArrayDeque
 
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -55,6 +59,19 @@ import kotlin.random.Random
 data class UiPeer(val address: String, val playerId: Int, val displayName: String)
 
 data class BleScanCandidate(val address: String, val name: String?, val rssi: Int)
+
+private data class SinglePlayerUndoEntry(
+    val match: MatchState,
+    val resolution: RollResolutionState,
+    val crosses: Int,
+    val move: LegalMove
+)
+
+private fun MatchState.snapshot(): MatchState = copy(
+    playerSheets = playerSheets.map { sheet ->
+        sheet.copy(rows = sheet.rows.mapValues { (_, st) -> st.copy() })
+    }
+)
 
 class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -81,6 +98,20 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
     private val _lastRoll = MutableStateFlow<DiceRoll?>(null)
 
     val lastRoll: StateFlow<DiceRoll?> = _lastRoll.asStateFlow()
+
+
+
+    /** Increments on each physical roll so dice animation replays even if [DiceRoll] equals the previous. */
+    private val _diceRollGeneration = MutableStateFlow(0)
+
+    val diceRollGeneration: StateFlow<Int> = _diceRollGeneration.asStateFlow()
+
+
+
+    /** False while dice roll animation runs; score sheet legal highlights wait until true. */
+    private val _diceRollAnimationSettled = MutableStateFlow(true)
+
+    val diceRollAnimationSettled: StateFlow<Boolean> = _diceRollAnimationSettled.asStateFlow()
 
 
 
@@ -111,6 +142,11 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
     private val _crossesThisRoll = MutableStateFlow(0)
 
     val crossesThisRoll: StateFlow<Int> = _crossesThisRoll.asStateFlow()
+
+
+
+    /** Single-player only: snapshots before each cross this roll; cleared on end turn / new roll. */
+    private val singlePlayerUndoStack = ArrayDeque<SinglePlayerUndoEntry>()
 
 
 
@@ -216,7 +252,11 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
                             val (roll, _) = GameMessageCodec.parseRoll(root)
 
+                            _diceRollAnimationSettled.value = false
+
                             _lastRoll.value = roll
+
+                            _diceRollGeneration.update { it + 1 }
 
                         }
 
@@ -330,6 +370,10 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         _lastRoll.value = null
 
+        _diceRollGeneration.value = 0
+
+        _diceRollAnimationSettled.value = true
+
         _rollResolution.value = null
 
         _legalMoves.value = emptyList()
@@ -339,6 +383,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         _crossesThisRoll.value = 0
 
         _bleScanCandidates.value = emptyList()
+
+        singlePlayerUndoStack.clear()
 
     }
 
@@ -404,7 +450,11 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val roll = buildDiceRoll(state, rnd)
 
+        _diceRollAnimationSettled.value = false
+
         _lastRoll.value = roll
+
+        _diceRollGeneration.update { it + 1 }
 
         val payload = GameMessageCodec.encodeRoll(roll, state.activePlayerIndex, cid = rnd.nextInt())
 
@@ -442,11 +492,17 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val roll = buildDiceRoll(state, rnd)
 
+        _diceRollAnimationSettled.value = false
+
         _lastRoll.value = roll
+
+        _diceRollGeneration.update { it + 1 }
 
         _rollResolution.value = RollResolutionState(roll)
 
         _crossesThisRoll.value = 0
+
+        singlePlayerUndoStack.clear()
 
         refreshLegalMoves()
 
@@ -496,17 +552,17 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val sheet = state.playerSheets[state.activePlayerIndex]
 
-        _legalMoves.value = LocXXRollResolution.legalActiveMoves(
+        _legalMoves.value = LocXXRollResolution.legalMoves(
 
-            res.roll,
+            isActivePlayer = true,
 
-            sheet,
+            roll = res.roll,
 
-            state.diceInPlay,
+            sheet = sheet,
 
-            res.pathChoice,
+            diceInPlay = state.diceInPlay,
 
-            res.whiteUsedForColor
+            resolution = res
 
         )
 
@@ -524,6 +580,12 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val idx = state.activePlayerIndex
 
+        val snapMatch = state.snapshot()
+
+        val snapRes = res.copy()
+
+        val snapCrosses = _crossesThisRoll.value
+
         val newState = LocXXRules.applyCrossToMatch(state, idx, move.row, move.value).getOrElse {
 
             appendLog("illegal move: ${it.message}")
@@ -533,6 +595,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val newRes = LocXXRollResolution.afterMove(res, move)
+
+        singlePlayerUndoStack.addLast(SinglePlayerUndoEntry(snapMatch, snapRes, snapCrosses, move))
 
         _match.value = newState
 
@@ -548,17 +612,71 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
 
 
-    /** When no legal crosses remain, take a penalty and end the turn. */
+    /** True if tapping this cell will undo the last cross (same row/value as that move). */
+    fun canUndoCell(row: RowId, value: Int): Boolean {
 
+        if (_role.value != Role.SinglePlayer) return false
+
+        val e = singlePlayerUndoStack.lastOrNull() ?: return false
+
+        return e.move.row == row && e.move.value == value
+
+    }
+
+
+
+    /** Undo the last cross this roll by tapping the same score cell again. */
+    fun tryUndoCell(row: RowId, value: Int): Boolean {
+
+        if (_role.value != Role.SinglePlayer) return false
+
+        val e = singlePlayerUndoStack.lastOrNull() ?: return false
+
+        if (e.move.row != row || e.move.value != value) return false
+
+        singlePlayerUndoStack.removeLast()
+
+        _match.value = e.match
+
+        _rollResolution.value = e.resolution
+
+        _crossesThisRoll.value = e.crosses
+
+        refreshLegalMoves()
+
+        checkGameOver(e.match)
+
+        return true
+
+    }
+
+
+
+    /** Call when [AnimatedLocXXDiceStrip] finishes tumbling and spinning. */
+    fun notifyDiceRollAnimationFinished() {
+
+        _diceRollAnimationSettled.value = true
+
+    }
+
+
+
+    /**
+     * Take a penalty and end the turn. Always allowed while a roll is open.
+     * Any crosses made this roll are undone first (Qwixx-style voluntary penalty).
+     */
     fun singlePlayerPenalty() {
 
         if (_role.value != Role.SinglePlayer) return
 
         if (_rollResolution.value == null) return
 
-        if (_crossesThisRoll.value > 0) return
-
-        if (_legalMoves.value.isNotEmpty()) return
+        val bottom = singlePlayerUndoStack.firstOrNull()
+        if (bottom != null) {
+            _match.value = bottom.match
+            _rollResolution.value = bottom.resolution
+        }
+        singlePlayerUndoStack.clear()
 
         applyPenaltyAndEndTurn()
 
@@ -594,6 +712,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         _legalMoves.value = emptyList()
 
+        singlePlayerUndoStack.clear()
+
         checkGameOver(state)
 
     }
@@ -619,6 +739,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         _crossesThisRoll.value = 0
 
         _legalMoves.value = emptyList()
+
+        singlePlayerUndoStack.clear()
 
         appendLog("penalty (${newSheet.penalties})")
 

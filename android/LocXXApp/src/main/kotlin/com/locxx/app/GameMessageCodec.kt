@@ -60,10 +60,13 @@ object GameMessageCodec {
             val rowObj = JSONObject()
             for (row in enumValues<com.locxx.rules.RowId>()) {
                 val pr = sheet.rows[row]!!
+                val crossedJa = JSONArray()
+                pr.crossedIndices.sorted().forEach { crossedJa.put(it) }
                 rowObj.put(
                     row.name,
                     JSONObject()
-                        .put("last", pr.lastCrossedIndex)
+                        .put("crossed", crossedJa)
+                        .put("last", pr.maxCrossedIndex)
                         .put("count", pr.crossCount)
                         .put("locked", pr.locked)
                 )
@@ -99,10 +102,25 @@ object GameMessageCodec {
             val rowsObj = so.getJSONObject("rows")
             val rows = enumValues<com.locxx.rules.RowId>().associateWith { r ->
                 val o = rowsObj.getJSONObject(r.name)
+                val locked = o.getBoolean("locked")
+                val crossed = when {
+                    o.has("crossed") -> {
+                        val ja = o.getJSONArray("crossed")
+                        buildSet {
+                            for (j in 0 until ja.length()) {
+                                add(ja.getInt(j))
+                            }
+                        }
+                    }
+                    o.has("last") -> {
+                        val last = o.getInt("last")
+                        if (last < 0) emptySet() else (0..last).toSet()
+                    }
+                    else -> emptySet()
+                }
                 com.locxx.rules.PlayerRowState(
-                    lastCrossedIndex = o.getInt("last"),
-                    crossCount = o.getInt("count"),
-                    locked = o.getBoolean("locked")
+                    crossedIndices = crossed,
+                    locked = locked
                 )
             }
             com.locxx.rules.PlayerSheet(rows = rows, penalties = so.getInt("penalties"))

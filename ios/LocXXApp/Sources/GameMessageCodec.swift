@@ -49,8 +49,10 @@ enum GameMessageCodec {
             var rows: [String: Any] = [:]
             for row in RowId.allCases {
                 let pr = sheet.rows[row]!
+                let crossed = pr.crossedIndices.sorted().map { $0 as Any }
                 rows[row.name] = [
-                    "last": pr.lastCrossedIndex,
+                    "crossed": crossed,
+                    "last": pr.maxCrossedIndex,
                     "count": pr.crossCount,
                     "locked": pr.locked,
                 ]

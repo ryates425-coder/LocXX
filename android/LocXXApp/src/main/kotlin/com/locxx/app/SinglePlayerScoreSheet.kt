@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -105,8 +106,8 @@ private val ScoreCellFontSize = 17.sp
 
 private val ScoreCellRowHeight = 48.dp
 
-private fun cellNumberAnnotated(value: Int, crossed: Boolean) = buildAnnotatedString {
-    withStyle(SpanStyle(fontWeight = if (crossed) FontWeight.Bold else FontWeight.Normal)) {
+private fun cellNumberAnnotated(value: Int) = buildAnnotatedString {
+    withStyle(SpanStyle(fontWeight = FontWeight.Normal)) {
         append(value.toString())
     }
 }
@@ -117,26 +118,48 @@ private fun ScoreCellNumberOrLock(
     rowState: PlayerRowState,
     value: Int,
     crossed: Boolean,
+    skipped: Boolean,
     color: Color,
     style: TextStyle,
     textAlign: TextAlign
 ) {
-    if (LocXXRules.isLockCellLocked(row, rowState, value)) {
-        Icon(
-            imageVector = Icons.Filled.Lock,
-            contentDescription = "Locked",
-            modifier = Modifier.size(24.dp),
-            tint = color
-        )
-    } else {
-        Text(
-            text = cellNumberAnnotated(value, crossed),
-            textAlign = textAlign,
-            maxLines = 1,
-            overflow = TextOverflow.Clip,
-            color = color,
-            style = style
-        )
+    when {
+        LocXXRules.isLockCellLocked(row, rowState, value) -> {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = "Locked",
+                modifier = Modifier.size(24.dp),
+                tint = color
+            )
+        }
+        skipped -> {
+            Text(
+                text = "\u2014\u2014\u2014",
+                textAlign = textAlign,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+                color = color,
+                style = style.copy(fontWeight = FontWeight.Medium)
+            )
+        }
+        crossed -> {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Marked",
+                modifier = Modifier.size(24.dp),
+                tint = color
+            )
+        }
+        else -> {
+            Text(
+                text = cellNumberAnnotated(value),
+                textAlign = textAlign,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+                color = color,
+                style = style
+            )
+        }
     }
 }
 
@@ -248,6 +271,7 @@ internal fun ScoreRowRow(
                                     rowState = rowState,
                                     value = value,
                                     crossed = crossed,
+                                    skipped = skipped,
                                     color = cellLabelColor,
                                     style = cellStyle,
                                     textAlign = TextAlign.Center
@@ -321,6 +345,7 @@ internal fun ScoreRowRow(
                             rowState = rowState,
                             value = value,
                             crossed = crossed,
+                            skipped = skipped,
                             color = cellLabelColor,
                             style = cellStyle,
                             textAlign = TextAlign.Center

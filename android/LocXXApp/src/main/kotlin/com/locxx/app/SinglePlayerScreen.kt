@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,7 +27,6 @@ fun SinglePlayerSection(
 ) {
     val match by vm.match.collectAsState()
     val lastRoll by vm.lastRoll.collectAsState()
-    val gameOver by vm.gameOverReason.collectAsState()
 
     val sheet = match?.playerSheets?.getOrNull(0) ?: return
 
@@ -61,10 +59,6 @@ fun SinglePlayerSection(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-        }
-        gameOver?.let { msg ->
-            Text(msg, color = MaterialTheme.colorScheme.error)
-            Button(onClick = { vm.startSinglePlayer() }) { Text("Play again") }
         }
     }
 }

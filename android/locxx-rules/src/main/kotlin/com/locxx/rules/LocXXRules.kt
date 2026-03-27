@@ -1,8 +1,9 @@
 package com.locxx.rules
 
 /**
- * Qwixx-equivalent scoring: points by number of crosses in a row (1..12).
- * Source: official scoring chart (1→1, 2→3, …, 12→78).
+ * Qwixx-equivalent scoring: points by effective crosses on the score pad (1..12).
+ * Physical marks on the row plus **one extra** when the row is **locked** (lock pad X), capped at 12 → 78 pts.
+ * Source: official scoring chart (1→1, 2→3, …, 12→78); 11 sheet marks = 66, + lock bonus = 12th = 78.
  */
 object LocXXRules {
 
@@ -13,12 +14,19 @@ object LocXXRules {
         return ROW_POINTS[c]
     }
 
+    /** Marks on the sheet plus one Qwixx lock bonus when [PlayerRowState.locked], for scoring only (max 12). */
+    fun crossCountForScoring(state: PlayerRowState): Int {
+        if (state.crossCount == 0) return 0
+        val n = state.crossCount + if (state.locked) 1 else 0
+        return n.coerceAtMost(ROW_POINTS.lastIndex)
+    }
+
     fun totalScore(sheet: PlayerSheet): Int {
         var total = 0
         for (row in enumValues<RowId>()) {
             val st = sheet.rows[row] ?: continue
             if (st.crossCount == 0) continue
-            total += pointsForCrosses(st.crossCount)
+            total += pointsForCrosses(crossCountForScoring(st))
         }
         total -= sheet.penalties * 5
         return total
@@ -28,7 +36,7 @@ object LocXXRules {
     fun rowPoints(sheet: PlayerSheet, row: RowId): Int {
         val st = sheet.rows[row] ?: return 0
         if (st.crossCount == 0) return 0
-        return pointsForCrosses(st.crossCount)
+        return pointsForCrosses(crossCountForScoring(st))
     }
 
     fun isValueCrossed(row: RowId, state: PlayerRowState, value: Int): Boolean {

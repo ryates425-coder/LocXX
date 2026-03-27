@@ -8,12 +8,19 @@ public enum LocXXRules {
         return rowPoints[c]
     }
 
+    /// Sheet marks plus one lock-pad bonus when `locked` (Qwixx), for scoring only (max 12).
+    public static func crossCountForScoring(_ state: PlayerRowState) -> Int {
+        if state.crossCount == 0 { return 0 }
+        let n = state.crossCount + (state.locked ? 1 : 0)
+        return min(n, rowPoints.count - 1)
+    }
+
     public static func totalScore(_ sheet: PlayerSheet) -> Int {
         var total = 0
         for row in RowId.allCases {
             let st = sheet.rows[row]!
             if st.crossCount == 0 { continue }
-            total += pointsForCrosses(st.crossCount)
+            total += pointsForCrosses(crossCountForScoring(st))
         }
         total -= sheet.penalties * 5
         return total
@@ -23,7 +30,7 @@ public enum LocXXRules {
     public static func rowPoints(_ sheet: PlayerSheet, row: RowId) -> Int {
         guard let st = sheet.rows[row] else { return 0 }
         if st.crossCount == 0 { return 0 }
-        return pointsForCrosses(st.crossCount)
+        return pointsForCrosses(crossCountForScoring(st))
     }
 
     public static func isValueCrossed(row: RowId, state: PlayerRowState, value: Int) -> Bool {

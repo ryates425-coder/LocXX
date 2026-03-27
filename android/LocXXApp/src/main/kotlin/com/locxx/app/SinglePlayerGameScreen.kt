@@ -75,10 +75,13 @@ fun SinglePlayerGameScreen(
     val legalMoves by vm.legalMoves.collectAsState()
     val legalMovesForSheet = if (diceRollAnimationSettled) legalMoves else emptyList()
     val gameOver by vm.gameOverReason.collectAsState()
+    val rowLockCelebration by vm.rowLockCelebration.collectAsState()
 
     val sheet = match?.playerSheets?.getOrNull(0)
     var ambiguous by remember { mutableStateOf<List<LegalMove>?>(null) }
     var showGameOverBreakdown by remember { mutableStateOf(false) }
+    var showCurrentScoreBreakdown by remember { mutableStateOf(false) }
+    var showPlayAgainConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(gameOver) {
         if (gameOver != null) showGameOverBreakdown = true
@@ -86,6 +89,7 @@ fun SinglePlayerGameScreen(
     }
 
     Surface(modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize()) {
         if (sheet == null) {
             Column(Modifier.padding(16.dp)) {
                 TextButton(onClick = onExit) { Text("Back") }
@@ -111,7 +115,13 @@ fun SinglePlayerGameScreen(
                     ) {
                         Text(
                             text = "Score: ${LocXXRules.totalScore(sheet)}",
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clickable { showCurrentScoreBreakdown = true }
+                                .semantics {
+                                    contentDescription = "Current score, tap for breakdown"
+                                }
                         )
                         PenaltyBoxes(
                             penaltyCount = sheet.penalties,
@@ -153,7 +163,8 @@ fun SinglePlayerGameScreen(
                             roll = lastRoll,
                             animationKey = diceRollGeneration,
                             dieSize = 40.dp,
-                            onRollAnimationFinished = { vm.notifyDiceRollAnimationFinished() }
+                            onRollAnimationFinished = { vm.notifyDiceRollAnimationFinished() },
+                            onDieDoubleTap = { vm.onSinglePlayerDieDoubleTap(it) }
                         )
                     }
 
@@ -169,16 +180,27 @@ fun SinglePlayerGameScreen(
                             onClick = { vm.endSinglePlayerTurn() },
                             enabled = gameOver == null && resolution != null
                         ) { Text("End turn") }
-                        TextButton(onClick = onExit) { Text("Back") }
+                        Button(
+                            onClick = {
+                                showGameOverBreakdown = false
+                                if (gameOver != null) {
+                                    vm.startSinglePlayer()
+                                } else {
+                                    showPlayAgainConfirm = true
+                                }
+                            }
+                        ) {
+                            Text("Play again")
+                        }
                     }
                 }
-
-                gameOver?.let { msg ->
-                    Spacer(Modifier.height(8.dp))
-                    Text(msg, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = { vm.startSinglePlayer() }) { Text("Play again") }
-                }
             }
+        }
+        RowLockCelebrationOverlay(
+            celebration = rowLockCelebration,
+            onDismiss = { vm.dismissRowLockCelebration() },
+            modifier = Modifier.fillMaxSize()
+        )
         }
     }
 
@@ -226,6 +248,25 @@ fun SinglePlayerGameScreen(
         )
     }
 
+    if (showCurrentScoreBreakdown && sheet != null) {
+        AlertDialog(
+            onDismissRequest = { showCurrentScoreBreakdown = false },
+            modifier = Modifier.fillMaxWidth(0.62f),
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            title = { Text("Current Score") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    GameOverScoreBreakdownRow(sheet = sheet)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCurrentScoreBreakdown = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
     if (showGameOverBreakdown && sheet != null) {
         AlertDialog(
             onDismissRequest = { showGameOverBreakdown = false },
@@ -245,10 +286,44 @@ fun SinglePlayerGameScreen(
                     GameOverScoreBreakdownRow(sheet = sheet)
                 }
             },
-            confirmButton = {
+            dismissButton = {
                 TextButton(onClick = { showGameOverBreakdown = false }) {
                     Text("OK")
                 }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showGameOverBreakdown = false
+                        vm.startSinglePlayer()
+                    }
+                ) { Text("Play again") }
+            }
+        )
+    }
+
+    if (showPlayAgainConfirm) {
+        AlertDialog(
+            onDismissRequest = { showPlayAgainConfirm = false },
+            title = { Text("Start new game?") },
+            text = {
+                Text(
+                    "Your current game will be replaced with a fresh score sheet.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showPlayAgainConfirm = false }) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.startSinglePlayer()
+                        showPlayAgainConfirm = false
+                    }
+                ) { Text("Play again") }
             }
         )
     }

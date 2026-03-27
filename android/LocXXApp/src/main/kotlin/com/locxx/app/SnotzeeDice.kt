@@ -5,6 +5,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -284,7 +286,9 @@ fun AnimatedLocXXDiceStrip(
     animationKey: Int = 0,
     dieSize: Dp = 40.dp,
     modifier: Modifier = Modifier,
-    onRollAnimationFinished: () -> Unit = {}
+    onRollAnimationFinished: () -> Unit = {},
+    /** Debug: double-tap — first white die is up to the app; second white ignored; colored dice rigged lock roll (single-player). */
+    onDieDoubleTap: ((LocXXDieSlot) -> Unit)? = null
 ) {
     if (roll == null) {
         LocXXDiceStrip(1, 1, 1, 1, 1, 1, hasRoll = false, dieSize = dieSize, modifier = modifier)
@@ -346,8 +350,16 @@ fun AnimatedLocXXDiceStrip(
         slots.forEachIndexed { index, (slot, v) ->
             val inactiveDie = inactive[index]
             val spin = rotations[index].value
+            val tapMod = if (onDieDoubleTap != null && slot != LocXXDieSlot.WHITE2) {
+                val cb = onDieDoubleTap
+                Modifier.pointerInput(slot, onDieDoubleTap) {
+                    detectTapGestures(onDoubleTap = { cb(slot) })
+                }
+            } else {
+                Modifier
+            }
             Box(
-                modifier = Modifier.graphicsLayer {
+                modifier = tapMod.graphicsLayer {
                     rotationZ = if (inactiveDie) 0f else spin
                 }
             ) {

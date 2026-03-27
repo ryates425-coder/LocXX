@@ -70,6 +70,36 @@ class LocXXRulesTest {
     }
 
     @Test
+    fun lockBonusCountsExtraCrossForScoring() {
+        var st = PlayerRowState()
+        val values = rowValues(RowId.RED)
+        for (i in 0 until 5) {
+            st = LocXXRules.applyCross(RowId.RED, st, values[i]).getOrThrow()
+        }
+        st = LocXXRules.applyCross(RowId.RED, st, 12).getOrThrow()
+        assertEquals(6, st.crossCount)
+        assertEquals(7, LocXXRules.crossCountForScoring(st))
+        val rows = enumValues<RowId>().associateWith { PlayerRowState() }.toMutableMap()
+        rows[RowId.RED] = st
+        assertEquals(LocXXRules.pointsForCrosses(7), LocXXRules.rowPoints(PlayerSheet(rows = rows), RowId.RED))
+    }
+
+    @Test
+    fun fullRowLockedScores78() {
+        var st = PlayerRowState()
+        val values = rowValues(RowId.RED)
+        for (i in values.indices) {
+            st = LocXXRules.applyCross(RowId.RED, st, values[i]).getOrThrow()
+        }
+        assertTrue(st.locked)
+        assertEquals(11, st.crossCount)
+        assertEquals(12, LocXXRules.crossCountForScoring(st))
+        val rows = enumValues<RowId>().associateWith { PlayerRowState() }.toMutableMap()
+        rows[RowId.RED] = st
+        assertEquals(78, LocXXRules.rowPoints(PlayerSheet(rows = rows), RowId.RED))
+    }
+
+    @Test
     fun lockCellReadyToMarkGlowsAfterFiveCrosses() {
         var st = PlayerRowState()
         val values = rowValues(RowId.RED)

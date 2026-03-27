@@ -38,6 +38,34 @@ final class LocXXRulesTests: XCTestCase {
         XCTAssertEqual(st.crossedIndices, Set([0, 1, 2, 3, 4, 10]))
     }
 
+    func testLockBonusScoring() throws {
+        var st = PlayerRowState()
+        let values = rowValues(.red)
+        for i in 0 ..< 5 {
+            st = try LocXXRules.applyCross(row: .red, state: st, value: values[i]).get()
+        }
+        st = try LocXXRules.applyCross(row: .red, state: st, value: 12).get()
+        XCTAssertEqual(6, st.crossCount)
+        XCTAssertEqual(7, LocXXRules.crossCountForScoring(st))
+        var rows = Dictionary(uniqueKeysWithValues: RowId.allCases.map { ($0, PlayerRowState()) })
+        rows[.red] = st
+        XCTAssertEqual(LocXXRules.pointsForCrosses(7), LocXXRules.rowPoints(PlayerSheet(rows: rows), .red))
+    }
+
+    func testFullRowLockedScores78() throws {
+        var st = PlayerRowState()
+        let values = rowValues(.red)
+        for i in values.indices {
+            st = try LocXXRules.applyCross(row: .red, state: st, value: values[i]).get()
+        }
+        XCTAssertTrue(st.locked)
+        XCTAssertEqual(11, st.crossCount)
+        XCTAssertEqual(12, LocXXRules.crossCountForScoring(st))
+        var rows = Dictionary(uniqueKeysWithValues: RowId.allCases.map { ($0, PlayerRowState()) })
+        rows[.red] = st
+        XCTAssertEqual(78, LocXXRules.rowPoints(PlayerSheet(rows: rows), .red))
+    }
+
     func testRowPoints() throws {
         XCTAssertEqual(LocXXRules.rowPoints(PlayerSheet(), .red), 0)
         var st = PlayerRowState()

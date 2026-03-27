@@ -40,6 +40,8 @@ import com.locxx.rules.RowId
 
 import com.locxx.rules.initialMatchState
 
+import com.locxx.rules.rowValues
+
 import kotlin.collections.ArrayDeque
 
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +51,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 import kotlinx.coroutines.flow.update
+
+import kotlinx.coroutines.delay
 
 import kotlinx.coroutines.launch
 
@@ -136,6 +140,18 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
     private val _gameOverReason = MutableStateFlow<String?>(null)
 
     val gameOverReason: StateFlow<String?> = _gameOverReason.asStateFlow()
+
+
+
+    private val _rowLockCelebration = MutableStateFlow<RowLockCelebrationUi?>(null)
+
+    val rowLockCelebration: StateFlow<RowLockCelebrationUi?> = _rowLockCelebration.asStateFlow()
+
+
+
+    fun dismissRowLockCelebration() {
+        _rowLockCelebration.value = null
+    }
 
 
 
@@ -380,6 +396,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         _gameOverReason.value = null
 
+        _rowLockCelebration.value = null
+
         _crossesThisRoll.value = 0
 
         _bleScanCandidates.value = emptyList()
@@ -492,6 +510,91 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val roll = buildDiceRoll(state, rnd)
 
+        applySinglePlayerRoll(roll)
+
+        appendLog("rolled white=${roll.whiteSum()}")
+
+    }
+
+
+
+    /**
+     * Debug double-tap on the animated dice strip (single-player): first white die plays the
+     * row-lock celebration only; colored dice apply a rigged roll for that row’s lock cell.
+     */
+    fun onSinglePlayerDieDoubleTap(slot: LocXXDieSlot) {
+        when (slot) {
+            LocXXDieSlot.WHITE1 -> playFirstWhiteDieLockCelebration()
+            LocXXDieSlot.WHITE2 -> Unit
+            else -> rollDiceSinglePlayerDebugLock(slot)
+        }
+    }
+
+
+
+    /**
+     * Debug: double-tap a **colored** die on the strip to roll with values fixed so the lock cell
+     * for that row is achievable. White dice are ignored (no rigged roll).
+     */
+    fun rollDiceSinglePlayerDebugLock(slot: LocXXDieSlot) {
+
+        if (_role.value != Role.SinglePlayer) return
+
+        if (_gameOverReason.value != null) {
+
+            appendLog("game over — restart single player")
+
+            return
+
+        }
+
+        if (_rollResolution.value != null) {
+
+            appendLog("end turn before rolling again")
+
+            return
+
+        }
+
+        val state = _match.value ?: return
+
+        val row = when (slot) {
+            LocXXDieSlot.WHITE1, LocXXDieSlot.WHITE2 -> return
+            LocXXDieSlot.RED -> RowId.RED
+            LocXXDieSlot.YELLOW -> RowId.YELLOW
+            LocXXDieSlot.GREEN -> RowId.GREEN
+            LocXXDieSlot.BLUE -> RowId.BLUE
+        }
+
+        val roll = buildDebugLockDiceRoll(state, row)
+
+        applySinglePlayerRoll(roll)
+
+        appendLog("debug: rigged roll for ${row.name} lock (${rowValues(row).last()})")
+
+    }
+
+
+
+    /** Confetti / sound / overlay for the red row — no dice change (debug: double-tap first white die). */
+    private fun playFirstWhiteDieLockCelebration() {
+        if (_role.value != Role.SinglePlayer) return
+        val m = _match.value ?: return
+        val idx = m.activePlayerIndex
+        val sheet = m.playerSheets[idx]
+        val row = RowId.RED
+        val pts = LocXXRules.rowPoints(sheet, row)
+        viewModelScope.launch {
+            _rowLockCelebration.value = null
+            delay(1)
+            _rowLockCelebration.value = RowLockCelebrationUi(row, pts)
+        }
+    }
+
+
+
+    private fun applySinglePlayerRoll(roll: DiceRoll) {
+
         _diceRollAnimationSettled.value = false
 
         _lastRoll.value = roll
@@ -505,8 +608,6 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         singlePlayerUndoStack.clear()
 
         refreshLegalMoves()
-
-        appendLog("rolled white=${roll.whiteSum()}")
 
     }
 
@@ -531,6 +632,51 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
             blue = if (state.diceInPlay.contains(DieColor.BLUE)) d() else 0
 
         )
+
+    }
+
+
+
+    /** Whites 6+6 and color dice 6 when in play — lock value 12 on red/yellow. Whites 1+1 and color 1 — lock value 2 on green/blue. */
+    private fun buildDebugLockDiceRoll(state: MatchState, row: RowId): DiceRoll {
+
+        fun dColor(dc: DieColor, value: Int) = if (state.diceInPlay.contains(dc)) value else 0
+
+        return when (row) {
+
+            RowId.RED, RowId.YELLOW -> DiceRoll(
+
+                white1 = 6,
+
+                white2 = 6,
+
+                red = dColor(DieColor.RED, 6),
+
+                yellow = dColor(DieColor.YELLOW, 6),
+
+                green = dColor(DieColor.GREEN, 6),
+
+                blue = dColor(DieColor.BLUE, 6)
+
+            )
+
+            RowId.GREEN, RowId.BLUE -> DiceRoll(
+
+                white1 = 1,
+
+                white2 = 1,
+
+                red = dColor(DieColor.RED, 4),
+
+                yellow = dColor(DieColor.YELLOW, 4),
+
+                green = dColor(DieColor.GREEN, if (row == RowId.GREEN) 1 else 4),
+
+                blue = dColor(DieColor.BLUE, if (row == RowId.BLUE) 1 else 4)
+
+            )
+
+        }
 
     }
 
@@ -604,9 +750,17 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         _crossesThisRoll.update { it + 1 }
 
+        val addedLocks = newState.globallyLockedRows - state.globallyLockedRows
+        if (addedLocks.isNotEmpty()) {
+            val r = addedLocks.first()
+            val sheet = newState.playerSheets[idx]
+            val pts = LocXXRules.rowPoints(sheet, r)
+            _rowLockCelebration.value = RowLockCelebrationUi(r, pts)
+        }
+
         refreshLegalMoves()
 
-        checkGameOver(newState)
+        // Game over (e.g. second lock) is checked only when the turn ends, not when locking mid-turn.
 
     }
 
@@ -635,6 +789,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         if (e.move.row != row || e.move.value != value) return false
 
         singlePlayerUndoStack.removeLast()
+
+        _rowLockCelebration.value = null
 
         _match.value = e.match
 
@@ -750,6 +906,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
 
 
+    /** Single-player: called when a turn ends (End turn or penalty), not after each cross. */
     private fun checkGameOver(state: MatchState) {
 
         val sheet = state.playerSheets[state.activePlayerIndex]
@@ -791,5 +948,4 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
     }
 
 }
-
 

@@ -64,6 +64,30 @@ private val SnotzeePlainDiceFace = Color(0xFFFFFFFF)
 private val SnotzeePlainDiceBorder = Color(0xFFAAAAAA)
 private val SnotzeePlainDot = Color(0xFF111111)
 
+/** Sunset / WLW–associated 5-stripe palette (first white die). */
+private val LocxxInclusivityWlwStripes: List<Color> = listOf(
+    Color(0xFFD52D00),
+    Color(0xFFFF9B54),
+    Color(0xFFFFFFFF),
+    Color(0xFFE4ACC9),
+    Color(0xFFA40062)
+)
+
+/** Progress Pride–inspired horizontal stripes: marginalized colors + rainbow (second white die). */
+private val LocxxInclusivityProgressStripes: List<Color> = listOf(
+    Color(0xFF000000),
+    Color(0xFF784F17),
+    Color(0xFF62CDFF),
+    Color(0xFFFF8DCF),
+    Color(0xFFFFFFFF),
+    Color(0xFFE40303),
+    Color(0xFFFF8C00),
+    Color(0xFFFFED00),
+    Color(0xFF008026),
+    Color(0xFF004CFF),
+    Color(0xFF732982)
+)
+
 private val LocXXRedFace = Color(0xFFE53935)
 private val LocXXYellowFace = Color(0xFFFBC02D)
 private val LocXXGreenFace = Color(0xFF34D399)
@@ -80,6 +104,20 @@ fun faceColorForDieSlot(slot: LocXXDieSlot): Color = when (slot) {
 fun dotColorForDieSlot(slot: LocXXDieSlot): Color = when (slot) {
     LocXXDieSlot.WHITE1, LocXXDieSlot.WHITE2 -> SnotzeePlainDot
     else -> Color(0xFFF8FAFC)
+}
+
+@Composable
+private fun HorizontalStripedDieFace(stripes: List<Color>, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        stripes.forEach { c ->
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(c)
+            )
+        }
+    }
 }
 
 /** Pip layout matches Snotzee 3×3 grid indices (row-major 0–8). */
@@ -101,22 +139,42 @@ fun SnotzeeStyleDie(
     size: Dp = 52.dp,
     placeholder: Boolean = false
 ) {
+    val inclusivityOn by LocxxInclusivityDiceConfig.enabledState
+    val showInclusivityStripes = inclusivityOn &&
+        (slot == LocXXDieSlot.WHITE1 || slot == LocXXDieSlot.WHITE2)
     val face = faceColorForDieSlot(slot)
     val dot = dotColorForDieSlot(slot)
+    val inclusivityPip = Color(0xFF151515)
     val pips = pipIndicesForValue(value)
+    val corner = RoundedCornerShape(size * 0.22f)
     Box(
         modifier = modifier
             .size(size)
-            .clip(RoundedCornerShape(size * 0.22f))
-            .background(face)
-            .border(2.dp, SnotzeePlainDiceBorder, RoundedCornerShape(size * 0.22f))
+            .clip(corner)
+            .then(
+                if (showInclusivityStripes) Modifier else Modifier.background(face)
+            )
+            .border(2.dp, SnotzeePlainDiceBorder, corner)
             .padding(size * 0.1f)
     ) {
+        Box(Modifier.fillMaxSize().clip(RoundedCornerShape(size * 0.16f))) {
+            when {
+                showInclusivityStripes && slot == LocXXDieSlot.WHITE1 ->
+                    HorizontalStripedDieFace(LocxxInclusivityWlwStripes, Modifier.fillMaxSize())
+                showInclusivityStripes && slot == LocXXDieSlot.WHITE2 ->
+                    HorizontalStripedDieFace(LocxxInclusivityProgressStripes, Modifier.fillMaxSize())
+                else -> Box(Modifier.fillMaxSize().background(face))
+            }
+        }
         if (placeholder) {
             Text(
                 "—",
                 modifier = Modifier.align(Alignment.Center),
-                color = dot.copy(alpha = 0.45f),
+                color = if (showInclusivityStripes) {
+                    inclusivityPip.copy(alpha = 0.55f)
+                } else {
+                    dot.copy(alpha = 0.45f)
+                },
                 fontSize = (size.value * 0.35f).sp,
                 textAlign = TextAlign.Center
             )
@@ -140,11 +198,23 @@ fun SnotzeeStyleDie(
                             contentAlignment = Alignment.Center
                         ) {
                             if (idx in pips) {
+                                val pipColor = if (showInclusivityStripes) inclusivityPip else dot
                                 Box(
                                     Modifier
                                         .size(size * 0.14f)
                                         .clip(CircleShape)
-                                        .background(dot)
+                                        .background(pipColor)
+                                        .then(
+                                            if (showInclusivityStripes) {
+                                                Modifier.border(
+                                                    1.dp,
+                                                    Color.White.copy(alpha = 0.88f),
+                                                    CircleShape
+                                                )
+                                            } else {
+                                                Modifier
+                                            }
+                                        )
                                 )
                             }
                         }
@@ -165,9 +235,11 @@ fun LocXXDiceStrip(
     blue: Int,
     hasRoll: Boolean,
     dieSize: Dp = 48.dp,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** When true, only the two white dice are drawn (passive players in multiplayer). */
+    whiteDiceOnly: Boolean = false
 ) {
-    val slots = listOf(
+    val allSlots = listOf(
         LocXXDieSlot.WHITE1 to white1,
         LocXXDieSlot.WHITE2 to white2,
         LocXXDieSlot.RED to red,
@@ -175,6 +247,7 @@ fun LocXXDiceStrip(
         LocXXDieSlot.GREEN to green,
         LocXXDieSlot.BLUE to blue
     )
+    val slots = if (whiteDiceOnly) allSlots.take(2) else allSlots
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -288,20 +361,73 @@ fun AnimatedLocXXDiceStrip(
     modifier: Modifier = Modifier,
     onRollAnimationFinished: () -> Unit = {},
     /** Debug: double-tap — first white die is up to the app; second white ignored; colored dice rigged lock roll (single-player). */
-    onDieDoubleTap: ((LocXXDieSlot) -> Unit)? = null
+    onDieDoubleTap: ((LocXXDieSlot) -> Unit)? = null,
+    /** Passive multiplayer: show only whites (matches score-card options). */
+    whiteDiceOnly: Boolean = false
 ) {
     if (roll == null) {
-        LocXXDiceStrip(1, 1, 1, 1, 1, 1, hasRoll = false, dieSize = dieSize, modifier = modifier)
+        if (onDieDoubleTap == null) {
+            LocXXDiceStrip(
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                hasRoll = false,
+                dieSize = dieSize,
+                modifier = modifier,
+                whiteDiceOnly = whiteDiceOnly
+            )
+            return
+        }
+        // Same order as non-null branch so debug double-tap works when there is no lastRoll yet (LAN idle).
+        val allSlots = listOf(
+            LocXXDieSlot.WHITE1,
+            LocXXDieSlot.WHITE2,
+            LocXXDieSlot.RED,
+            LocXXDieSlot.YELLOW,
+            LocXXDieSlot.GREEN,
+            LocXXDieSlot.BLUE
+        )
+        val slots = if (whiteDiceOnly) allSlots.take(2) else allSlots
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            slots.forEach { slot ->
+                val tapMod =
+                    if (slot != LocXXDieSlot.WHITE2) {
+                        val cb = onDieDoubleTap
+                        Modifier.pointerInput(slot, onDieDoubleTap) {
+                            detectTapGestures(onDoubleTap = { cb(slot) })
+                        }
+                    } else {
+                        Modifier
+                    }
+                Box(modifier = tapMod) {
+                    SnotzeeStyleDie(
+                        value = 1,
+                        slot = slot,
+                        size = dieSize,
+                        placeholder = true
+                    )
+                }
+            }
+        }
         return
     }
 
-    val rotations = remember { List(6) { Animatable(0f) } }
+    val dieCount = if (whiteDiceOnly) 2 else 6
+    val rotations = remember(animationKey, whiteDiceOnly) { List(dieCount) { Animatable(0f) } }
     val rng = remember { Random.Default }
     var displayRoll by remember(roll, animationKey) {
         mutableStateOf(roll.randomFaceTick(rng))
     }
 
-    LaunchedEffect(roll, animationKey) {
+    LaunchedEffect(roll, animationKey, whiteDiceOnly) {
+        playLocxxDiceRollFlutter()
         val endAt = System.currentTimeMillis() + SnotzeeRollTumbleMs
         coroutineScope {
             launch {
@@ -326,7 +452,7 @@ fun AnimatedLocXXDiceStrip(
         onRollAnimationFinished()
     }
 
-    val slots = listOf(
+    val allSlots = listOf(
         LocXXDieSlot.WHITE1 to displayRoll.white1,
         LocXXDieSlot.WHITE2 to displayRoll.white2,
         LocXXDieSlot.RED to displayRoll.red,
@@ -334,7 +460,8 @@ fun AnimatedLocXXDiceStrip(
         LocXXDieSlot.GREEN to displayRoll.green,
         LocXXDieSlot.BLUE to displayRoll.blue
     )
-    val inactive = listOf(
+    val slots = if (whiteDiceOnly) allSlots.take(2) else allSlots
+    val allInactive = listOf(
         roll.white1 == 0,
         roll.white2 == 0,
         roll.red == 0,
@@ -342,6 +469,7 @@ fun AnimatedLocXXDiceStrip(
         roll.green == 0,
         roll.blue == 0
     )
+    val inactive = if (whiteDiceOnly) allInactive.take(2) else allInactive
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),

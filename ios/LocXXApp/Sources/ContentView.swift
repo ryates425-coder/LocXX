@@ -10,11 +10,14 @@ struct ContentView: View {
                 Text("LocXX")
                     .font(.largeTitle)
                 TextField("Display name", text: $name)
+                    .multilineTextAlignment(.center)
                     .textFieldStyle(.roundedBorder)
                 Button("Host game") { model.startHost(displayName: name) }
-                Button("Join (scan)") { model.startClient(displayName: name) }
+                Button("Join (LAN)") { model.startClient(displayName: name) }
                 Button("Stop", role: .destructive) { model.stopAll() }
                 if model.role == .host {
+                    Text("Waiting for players on the same Wi‑Fi — they can tap Join (automatic).")
+                        .font(.body)
                     Button("Roll dice (host)") { model.hostRollDice() }
                 }
                 if let r = model.lastRoll {

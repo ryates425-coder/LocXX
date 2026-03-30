@@ -70,7 +70,9 @@ fun RowLockCelebrationOverlay(
     val rowPoints = celebration.rowPoints
 
     LaunchedEffect(celebration) {
-        playSnotzeeBonusHorn()
+        if (LocxxRowLockFanfareConfig.playHorn) {
+            playSnotzeeBonusHorn()
+        }
         delay(3200)
         onDismiss()
     }

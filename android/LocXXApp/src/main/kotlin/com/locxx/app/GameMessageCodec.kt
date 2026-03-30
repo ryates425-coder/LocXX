@@ -1,14 +1,35 @@
 package com.locxx.app
 
 import com.locxx.rules.DiceRoll
+import com.locxx.rules.DieColor
 import com.locxx.rules.MatchState
+import com.locxx.rules.PlayerSheet
+import com.locxx.rules.RollResolutionState
+import com.locxx.rules.RowId
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * App-layer JSON inside [com.locxx.bluetoothgaming.WireMessageType.APP_PAYLOAD] frames.
+ * App-layer JSON inside [com.locxx.langaming.WireMessageType.APP_PAYLOAD] frames.
  */
 object GameMessageCodec {
+
+    data class GameStateWire(
+        val match: MatchState,
+        val openRoll: DiceRoll?,
+        /** Per-player resolution for [openRoll]; null when no roll is open. */
+        val resolutionsByPlayer: List<RollResolutionState>?,
+        val activeCrossesThisRoll: Int,
+        /** Seat indices that pressed Done this roll (inactive = white phase finished; roller = scoring finished). Next roll after all seats are listed. */
+        val whitePhaseAcks: Set<Int>,
+        /** Optional UI names per seat, from host broadcasts; same order as [MatchState.playerSheets]. */
+        val playerDisplayNames: List<String>? = null,
+        /**
+         * Per-seat rows where that player can mark the lock cell (5 crosses, not locked);
+         * lets opponents pulse lock icons when sheets are masked during an open roll.
+         */
+        val lockReadyBySeat: List<Set<RowId>>? = null
+    )
 
     fun encodeAppPayload(json: JSONObject): ByteArray {
         val root = JSONObject()
@@ -24,16 +45,31 @@ object GameMessageCodec {
         return root
     }
 
+    /** Host tells clients to open the play / score screen (after “Start game”). */
+    fun encodeGameStarted(): ByteArray {
+        val json = JSONObject()
+        json.put("kind", "game_started")
+        json.put("body", JSONObject())
+        return encodeAppPayload(json)
+    }
+
+    /** Host is stopping the session; clients should disconnect and return to the menu. */
+    fun encodeHostExited(): ByteArray {
+        val json = JSONObject()
+        json.put("kind", "host_exited")
+        json.put("body", JSONObject())
+        return encodeAppPayload(json)
+    }
+
+    /** Dice fields for [encodeRoll] or [buildDebugRollBody] (no active index). */
+    fun buildDebugRollBody(roll: DiceRoll, cid: Int): JSONObject =
+        diceRollToJson(roll).put("cid", cid)
+
+    fun parseDebugRollBody(body: JSONObject): DiceRoll = diceRollFromJson(body)
+
     fun encodeRoll(roll: DiceRoll, activePlayerIndex: Int, cid: Int): ByteArray {
-        val body = JSONObject()
-        body.put("white1", roll.white1)
-        body.put("white2", roll.white2)
-        body.put("red", roll.red)
-        body.put("yellow", roll.yellow)
-        body.put("green", roll.green)
-        body.put("blue", roll.blue)
+        val body = buildDebugRollBody(roll, cid)
         body.put("activePlayerIndex", activePlayerIndex)
-        body.put("cid", cid)
         val json = JSONObject()
         json.put("kind", "roll")
         json.put("body", body)
@@ -54,7 +90,233 @@ object GameMessageCodec {
         return roll to active
     }
 
-    fun encodeGameState(state: MatchState): ByteArray {
+    fun encodeGameState(state: MatchState): ByteArray =
+        encodeGameState(
+            state,
+            openRoll = null,
+            resolutionsByPlayer = null,
+            activeCrossesThisRoll = 0,
+            whitePhaseAcks = emptySet(),
+            playerDisplayNames = null
+        )
+
+    fun encodeGameState(
+        state: MatchState,
+        openRoll: DiceRoll?,
+        resolutionsByPlayer: List<RollResolutionState>?,
+        activeCrossesThisRoll: Int,
+        whitePhaseAcks: Set<Int> = emptySet(),
+        playerDisplayNames: List<String>? = null,
+        lockReadyBySeat: List<Set<RowId>>? = null
+    ): ByteArray {
+        val body = matchStateToJson(state)
+        if (playerDisplayNames != null && playerDisplayNames.size == state.playerCount) {
+            val nameJa = JSONArray()
+            playerDisplayNames.forEach { nameJa.put(it) }
+            body.put("playerNames", nameJa)
+        }
+        if (openRoll != null && resolutionsByPlayer != null) {
+            body.put("openRoll", diceRollToJson(openRoll))
+            val arr = JSONArray()
+            for (pr in resolutionsByPlayer) {
+                val wc = JSONArray()
+                pr.whiteUsedForColor.forEach { wc.put(it.name) }
+                arr.put(
+                    JSONObject()
+                        .put("whiteSumUsed", pr.whiteSumUsed)
+                        .put("whiteUsedForColor", wc)
+                )
+            }
+            body.put("playerRollResolutions", arr)
+            body.put("activeCrossesThisRoll", activeCrossesThisRoll)
+            val ackJa = JSONArray()
+            whitePhaseAcks.sorted().forEach { ackJa.put(it) }
+            body.put("whitePhaseAcks", ackJa)
+            if (lockReadyBySeat != null && lockReadyBySeat.size == state.playerCount) {
+                val lrJa = JSONArray()
+                for (rows in lockReadyBySeat) {
+                    val rowJa = JSONArray()
+                    rows.sortedBy { it.ordinal }.forEach { rowJa.put(it.name) }
+                    lrJa.put(rowJa)
+                }
+                body.put("lockReadyBySeat", lrJa)
+            }
+        }
+        val json = JSONObject()
+        json.put("kind", "game_state")
+        json.put("body", body)
+        return encodeAppPayload(json)
+    }
+
+    fun parseGameState(root: JSONObject): MatchState = decodeGameStateWire(root).match
+
+    fun decodeGameStateWire(root: JSONObject): GameStateWire {
+        val body = root.getJSONObject("body")
+        val match = matchStateFromJson(body)
+        val playerDisplayNames = if (body.has("playerNames")) {
+            val ja = body.getJSONArray("playerNames")
+            val list = List(ja.length()) { i -> ja.getString(i) }
+            if (list.size == match.playerCount) list else null
+        } else {
+            null
+        }
+        if (!body.has("openRoll") || !body.has("playerRollResolutions")) {
+            return GameStateWire(match, null, null, 0, emptySet(), playerDisplayNames, null)
+        }
+        val roll = diceRollFromJson(body.getJSONObject("openRoll"))
+        val arr = body.getJSONArray("playerRollResolutions")
+        val list = List(arr.length()) { i ->
+            val ro = arr.getJSONObject(i)
+            val wcJa = ro.getJSONArray("whiteUsedForColor")
+            val wc = buildSet {
+                for (j in 0 until wcJa.length()) {
+                    add(DieColor.valueOf(wcJa.getString(j)))
+                }
+            }
+            RollResolutionState(
+                roll = roll,
+                whiteSumUsed = ro.getBoolean("whiteSumUsed"),
+                whiteUsedForColor = wc
+            )
+        }
+        val crosses = if (body.has("activeCrossesThisRoll")) body.getInt("activeCrossesThisRoll") else 0
+        val acks = if (body.has("whitePhaseAcks")) {
+            val ja = body.getJSONArray("whitePhaseAcks")
+            buildSet {
+                for (i in 0 until ja.length()) {
+                    add(ja.getInt(i))
+                }
+            }
+        } else {
+            emptySet()
+        }
+        val lockReadyBySeat: List<Set<RowId>>? =
+            if (body.has("lockReadyBySeat")) {
+                val lr = body.getJSONArray("lockReadyBySeat")
+                if (lr.length() == match.playerCount) {
+                    List(lr.length()) { i ->
+                        val rowJa = lr.getJSONArray(i)
+                        buildSet<RowId> {
+                            for (j in 0 until rowJa.length()) {
+                                runCatching { add(RowId.valueOf(rowJa.getString(j))) }
+                            }
+                        }
+                    }
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        return GameStateWire(match, roll, list, crosses, acks, playerDisplayNames, lockReadyBySeat)
+    }
+
+    fun encodeIntent(playerIndex: Int, kind: String, body: JSONObject): ByteArray {
+        val b = JSONObject(body.toString())
+        b.put("playerIndex", playerIndex)
+        val json = JSONObject()
+        json.put("kind", "intent_$kind")
+        json.put("body", b)
+        return encodeAppPayload(json)
+    }
+
+    /** One player's sheet for LAN Done (clients send; host merges). */
+    fun playerDoneSheetToJson(sheet: PlayerSheet): JSONObject {
+        val rowObj = JSONObject()
+        for (row in enumValues<com.locxx.rules.RowId>()) {
+            val pr = sheet.rows[row]!!
+            val crossedJa = JSONArray()
+            pr.crossedIndices.sorted().forEach { crossedJa.put(it) }
+            rowObj.put(
+                row.name,
+                JSONObject()
+                    .put("crossed", crossedJa)
+                    .put("last", pr.maxCrossedIndex)
+                    .put("count", pr.crossCount)
+                    .put("locked", pr.locked)
+            )
+        }
+        return JSONObject()
+            .put("rows", rowObj)
+            .put("penalties", sheet.penalties)
+    }
+
+    fun playerDoneSheetFromJson(o: JSONObject): PlayerSheet {
+        val rowsObj = o.getJSONObject("rows")
+        val rows = enumValues<com.locxx.rules.RowId>().associateWith { r ->
+            val rowO = rowsObj.getJSONObject(r.name)
+            val locked = rowO.getBoolean("locked")
+            val crossed = when {
+                rowO.has("crossed") -> {
+                    val ja = rowO.getJSONArray("crossed")
+                    buildSet {
+                        for (j in 0 until ja.length()) {
+                            add(ja.getInt(j))
+                        }
+                    }
+                }
+                rowO.has("last") -> {
+                    val last = rowO.getInt("last")
+                    if (last < 0) emptySet() else (0..last).toSet()
+                }
+                else -> emptySet()
+            }
+            com.locxx.rules.PlayerRowState(crossedIndices = crossed, locked = locked)
+        }
+        return PlayerSheet(rows = rows, penalties = o.getInt("penalties"))
+    }
+
+    fun rollResolutionAuxToJson(res: RollResolutionState): JSONObject {
+        val wc = JSONArray()
+        res.whiteUsedForColor.forEach { wc.put(it.name) }
+        return JSONObject()
+            .put("whiteSumUsed", res.whiteSumUsed)
+            .put("whiteUsedForColor", wc)
+    }
+
+    fun rollResolutionAuxFromJson(o: JSONObject, roll: DiceRoll): RollResolutionState {
+        val wcJa = o.getJSONArray("whiteUsedForColor")
+        val wc = buildSet {
+            for (j in 0 until wcJa.length()) {
+                add(DieColor.valueOf(wcJa.getString(j)))
+            }
+        }
+        return RollResolutionState(
+            roll = roll,
+            whiteSumUsed = o.getBoolean("whiteSumUsed"),
+            whiteUsedForColor = wc
+        )
+    }
+
+    /** Client → host when finishing white/done or roller end turn (no per-mark sync). */
+    fun buildLanDonePhaseBody(
+        sheet: PlayerSheet,
+        resolution: RollResolutionState,
+        crossesThisRoll: Int
+    ): JSONObject = JSONObject()
+        .put("playerSheet", playerDoneSheetToJson(sheet))
+        .put("rollResolution", rollResolutionAuxToJson(resolution))
+        .put("crossesThisRoll", crossesThisRoll)
+
+    fun diceRollToJson(roll: DiceRoll) = JSONObject().apply {
+        put("white1", roll.white1)
+        put("white2", roll.white2)
+        put("red", roll.red)
+        put("yellow", roll.yellow)
+        put("green", roll.green)
+        put("blue", roll.blue)
+    }
+
+    fun diceRollFromJson(o: JSONObject) = DiceRoll(
+        white1 = o.getInt("white1"),
+        white2 = o.getInt("white2"),
+        red = o.getInt("red"),
+        yellow = o.getInt("yellow"),
+        green = o.getInt("green"),
+        blue = o.getInt("blue")
+    )
+
+    private fun matchStateToJson(state: MatchState): JSONObject {
         val sheets = JSONArray()
         for (sheet in state.playerSheets) {
             val rowObj = JSONObject()
@@ -81,20 +343,15 @@ object GameMessageCodec {
         state.diceInPlay.forEach { dice.put(it.name) }
         val locked = JSONArray()
         state.globallyLockedRows.forEach { locked.put(it.name) }
-        val body = JSONObject()
-        body.put("playerCount", state.playerCount)
-        body.put("activePlayerIndex", state.activePlayerIndex)
-        body.put("sheets", sheets)
-        body.put("diceInPlay", dice)
-        body.put("globallyLockedRows", locked)
-        val json = JSONObject()
-        json.put("kind", "game_state")
-        json.put("body", body)
-        return encodeAppPayload(json)
+        return JSONObject()
+            .put("playerCount", state.playerCount)
+            .put("activePlayerIndex", state.activePlayerIndex)
+            .put("sheets", sheets)
+            .put("diceInPlay", dice)
+            .put("globallyLockedRows", locked)
     }
 
-    fun parseGameState(root: JSONObject): MatchState {
-        val body = root.getJSONObject("body")
+    private fun matchStateFromJson(body: JSONObject): MatchState {
         val playerCount = body.getInt("playerCount")
         val sheetsJa = body.getJSONArray("sheets")
         val sheets = List(playerCount) { i ->
@@ -144,14 +401,5 @@ object GameMessageCodec {
             diceInPlay = diceInPlay,
             globallyLockedRows = lockedRows
         )
-    }
-
-    fun encodeIntent(playerId: Int, kind: String, body: JSONObject): ByteArray {
-        val b = JSONObject(body.toString())
-        b.put("playerId", playerId)
-        val json = JSONObject()
-        json.put("kind", "intent_$kind")
-        json.put("body", b)
-        return encodeAppPayload(json)
     }
 }

@@ -4,8 +4,8 @@ options:
   deploymentTarget:
     iOS: "15.0"
 packages:
-  BluetoothGaming:
-    path: ../BluetoothGaming
+  LanGaming:
+    path: ../LanGaming
   LocXXRules:
     path: ../LocXXRules
 targets:
@@ -15,8 +15,8 @@ targets:
     sources:
       - path: Sources
     dependencies:
-      - package: BluetoothGaming
-        product: BluetoothGaming
+      - package: LanGaming
+        product: LanGaming
       - package: LocXXRules
         product: LocXXRules
     settings:

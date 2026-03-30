@@ -38,13 +38,15 @@ object LocXXRollResolution {
         sheet: PlayerSheet,
         diceInPlay: Set<DieColor>,
         whiteSumUsed: Boolean,
-        whiteUsedForColor: Set<DieColor>
+        whiteUsedForColor: Set<DieColor>,
+        globallyLockedRows: Set<RowId> = emptySet()
     ): List<LegalMove> {
         val out = ArrayList<LegalMove>()
         if (!whiteSumUsed) {
             val sum = roll.whiteSum()
             for (row in RowId.entries) {
                 val st = sheet.rows[row] ?: continue
+                if (row in globallyLockedRows) continue
                 if (LocXXRules.canCrossValue(row, st, sum)) {
                     out.add(LegalMove.WhiteSum(row, sum))
                 }
@@ -57,6 +59,8 @@ object LocXXRollResolution {
                 if (roll.white1 == roll.white2) listOf(DieColor.WHITE1)
                 else listOf(DieColor.WHITE1, DieColor.WHITE2)
             for (row in RowId.entries) {
+                val stRow = sheet.rows[row] ?: continue
+                if (row in globallyLockedRows) continue
                 val colorDie = row.dieColor()
                 if (!diceInPlay.contains(colorDie)) continue
                 for (white in whitesForColor) {
@@ -75,14 +79,16 @@ object LocXXRollResolution {
         roll: DiceRoll,
         sheet: PlayerSheet,
         diceInPlay: Set<DieColor>,
-        resolution: RollResolutionState
+        resolution: RollResolutionState,
+        globallyLockedRows: Set<RowId> = emptySet()
     ): List<LegalMove> = legalMoves(
         isActivePlayer = isActivePlayer,
         roll = roll,
         sheet = sheet,
         diceInPlay = diceInPlay,
         whiteSumUsed = resolution.whiteSumUsed,
-        whiteUsedForColor = resolution.whiteUsedForColor
+        whiteUsedForColor = resolution.whiteUsedForColor,
+        globallyLockedRows = globallyLockedRows
     )
 
     fun afterMove(resolution: RollResolutionState, move: LegalMove): RollResolutionState {

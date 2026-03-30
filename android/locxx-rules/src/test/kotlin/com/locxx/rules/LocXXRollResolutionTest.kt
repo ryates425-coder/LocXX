@@ -116,6 +116,45 @@ class LocXXRollResolutionTest {
     }
 
     @Test
+    fun noMovesInGloballyLockedRow() {
+        val sheet = PlayerSheet()
+        val roll = DiceRoll(2, 3, 5, 1, 1, 1)
+        val global = setOf(RowId.RED)
+        val moves = LocXXRollResolution.legalMoves(
+            isActivePlayer = true,
+            roll = roll,
+            sheet = sheet,
+            diceInPlay = allDice,
+            resolution = RollResolutionState(roll),
+            globallyLockedRows = global
+        )
+        assertFalse(moves.any { it is LegalMove.WhiteSum && (it as LegalMove.WhiteSum).row == RowId.RED })
+        assertFalse(moves.any { it is LegalMove.ColorCombo && (it as LegalMove.ColorCombo).row == RowId.RED })
+    }
+
+    @Test
+    fun noMovesInGloballyLockedRowEvenWithPriorProgress() {
+        var sheet = PlayerSheet()
+        val reds = rowValues(RowId.RED)
+        for (i in 0 until 3) {
+            sheet = sheet.copy(
+                rows = sheet.rows + (RowId.RED to LocXXRules.applyCross(RowId.RED, sheet.rows[RowId.RED]!!, reds[i]).getOrThrow())
+            )
+        }
+        val roll = DiceRoll(2, 3, 5, 1, 1, 1)
+        val global = setOf(RowId.RED)
+        val moves = LocXXRollResolution.legalMoves(
+            isActivePlayer = true,
+            roll = roll,
+            sheet = sheet,
+            diceInPlay = allDice,
+            resolution = RollResolutionState(roll),
+            globallyLockedRows = global
+        )
+        assertFalse(moves.any { it.row == RowId.RED })
+    }
+
+    @Test
     fun equalWhiteDiceNoDuplicateColorComboForSameRowAndSum() {
         val sheet = PlayerSheet()
         val roll = DiceRoll(4, 4, 3, 1, 1, 1) // white1==white2; WHITE+RED = 4+3=7

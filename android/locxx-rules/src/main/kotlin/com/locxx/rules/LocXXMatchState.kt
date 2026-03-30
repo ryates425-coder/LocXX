@@ -35,3 +35,21 @@ fun initialMatchState(playerCount: Int): MatchState {
         globallyLockedRows = emptySet()
     )
 }
+
+/**
+ * After a multiplayer roll phase ends: [MatchState.globallyLockedRows] is every color row where at least one player
+ * has locked ([RowId] red/yellow/green/blue), and those color dice are removed. While a roll is still open with
+ * deferred die removal, call [LocXXRules.applyCrossToMatch] with `removeLockedColorDieImmediately = false` so
+ * multiple players can lock the same row on that roll; then apply this so that row closes for everyone.
+ */
+fun MatchState.withDerivedGlobalLocksAndDice(): MatchState {
+    val lockedRows =
+        RowId.entries.filter { row ->
+            playerSheets.any { sh -> sh.rows[row]?.locked == true }
+        }.toSet()
+    var dice = enumValues<DieColor>().toSet()
+    for (r in lockedRows) {
+        dice = dice - LocXXRules.lockedDieRemoved(r)
+    }
+    return copy(globallyLockedRows = lockedRows, diceInPlay = dice)
+}

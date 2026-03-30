@@ -1,6 +1,6 @@
-import BluetoothGaming
 import Combine
 import Foundation
+import LanGaming
 import LocXXRules
 
 final class LocXXViewModel: ObservableObject {
@@ -14,19 +14,24 @@ final class LocXXViewModel: ObservableObject {
     @Published var lastRoll: DiceRoll?
     @Published var role: Role?
 
-    private var host: BluetoothGamingHost?
-    private var client: BluetoothGamingClient?
+    private var host: LanGamingHost?
+    private var client: LanGamingClient?
     private var listenerBox: ListenerBox?
+    private var mdnsAdvertiser: LocxxMdnsAdvertiser?
+    private var mdnsBrowser: LocxxMdnsBrowser?
 
     func startHost(displayName _: String) {
         stopAll()
         role = .host
         let box = ListenerBox(owner: self)
         listenerBox = box
-        let h = BluetoothGamingHost(listener: box)
+        let h = LanGamingHost(listener: box)
         host = h
         h.start()
-        appendLog("host starting…")
+        let adv = LocxxMdnsAdvertiser()
+        adv.start(port: Int(locxxLanPort))
+        mdnsAdvertiser = adv
+        appendLog("host started — players on same Wi‑Fi can join automatically")
         match = initialMatchState(playerCount: 1)
     }
 
@@ -35,14 +40,39 @@ final class LocXXViewModel: ObservableObject {
         role = .client
         let box = ListenerBox(owner: self)
         listenerBox = box
-        let c = BluetoothGamingClient(listener: box)
+        let c = LanGamingClient(listener: box)
         c.displayName = displayName
         client = c
-        _ = c.startScan()
-        appendLog("scanning…")
+        appendLog("looking for host on Wi‑Fi…")
+        let browser = LocxxMdnsBrowser(
+            onResolved: { [weak self] hostForUrl, port in
+                guard let self, self.role == .client, let cc = self.client else { return }
+                let url = "http://\(hostForUrl):\(port)"
+                self.appendLog("found host at \(url)")
+                cc.connect(hostBaseUrl: url)
+                self.mdnsBrowser?.stop()
+                self.mdnsBrowser = nil
+            },
+            onError: { [weak self] msg in
+                self?.appendLog("error: \(msg)")
+            }
+        )
+        browser.start()
+        mdnsBrowser = browser
+    }
+
+    func connectToLanHost(hostBaseUrl: String) {
+        mdnsBrowser?.stop()
+        mdnsBrowser = nil
+        client?.connect(hostBaseUrl: hostBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines))
+        appendLog("connecting…")
     }
 
     func stopAll() {
+        mdnsAdvertiser?.stop()
+        mdnsAdvertiser = nil
+        mdnsBrowser?.stop()
+        mdnsBrowser = nil
         host?.stop()
         host = nil
         client?.disconnect()
@@ -103,7 +133,6 @@ final class LocXXViewModel: ObservableObject {
             let root = try GameMessageCodec.decodeAppPayload(payload)
             let kind = root["kind"] as? String ?? ""
             if kind == "game_state" {
-                // Minimal: host broadcasts; client could parse full state here
                 appendLog("game_state")
             } else if kind == "roll" {
                 let (roll, _) = try GameMessageCodec.parseRoll(root)
@@ -126,7 +155,7 @@ final class LocXXViewModel: ObservableObject {
     }
 }
 
-private final class ListenerBox: BluetoothGamingListener {
+private final class ListenerBox: LanGamingListener {
     weak var owner: LocXXViewModel?
 
     init(owner: LocXXViewModel) {

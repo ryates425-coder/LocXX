@@ -160,4 +160,72 @@ class LocXXRulesTest {
         assertFalse(DieColor.RED in state.diceInPlay)
         assertTrue(RowId.RED in state.globallyLockedRows)
     }
+
+    @Test
+    fun applyCrossToMatchRejectsCrossWhenRowAlreadyGloballyLocked() {
+        var state = initialMatchState(2)
+        val vals = rowValues(RowId.RED)
+        for (i in 0 until 5) {
+            state = LocXXRules.applyCrossToMatch(state, 0, RowId.RED, vals[i]).getOrThrow()
+        }
+        state = LocXXRules.applyCrossToMatch(state, 0, RowId.RED, 12).getOrThrow()
+        assertTrue(RowId.RED in state.globallyLockedRows)
+        assertTrue(LocXXRules.applyCrossToMatch(state, 1, RowId.RED, 7).isFailure)
+    }
+
+    @Test
+    fun twoPlayersMayLockEachRowDuringOpenRollDeferGlobalUntilPhaseCommit() {
+        for (targetRow in RowId.entries) {
+            var state = initialMatchState(4)
+            val vals = rowValues(targetRow)
+            val lockValue = vals[vals.lastIndex]
+            val die = targetRow.dieColor()
+            for (i in 0 until 5) {
+                state =
+                    LocXXRules.applyCrossToMatch(
+                        state,
+                        0,
+                        targetRow,
+                        vals[i],
+                        removeLockedColorDieImmediately = false
+                    ).getOrThrow()
+                state =
+                    LocXXRules.applyCrossToMatch(
+                        state,
+                        1,
+                        targetRow,
+                        vals[i],
+                        removeLockedColorDieImmediately = false
+                    ).getOrThrow()
+            }
+            assertFalse(targetRow in state.globallyLockedRows)
+            state =
+                LocXXRules.applyCrossToMatch(
+                    state,
+                    0,
+                    targetRow,
+                    lockValue,
+                    removeLockedColorDieImmediately = false
+                ).getOrThrow()
+            assertTrue(state.playerSheets[0].rows[targetRow]!!.locked)
+            assertFalse(targetRow in state.globallyLockedRows)
+            assertTrue(die in state.diceInPlay)
+            state =
+                LocXXRules.applyCrossToMatch(
+                    state,
+                    1,
+                    targetRow,
+                    lockValue,
+                    removeLockedColorDieImmediately = false
+                ).getOrThrow()
+            assertTrue(state.playerSheets[1].rows[targetRow]!!.locked)
+            assertFalse(targetRow in state.globallyLockedRows)
+            state = state.withDerivedGlobalLocksAndDice()
+            assertTrue(targetRow in state.globallyLockedRows)
+            assertFalse(die in state.diceInPlay)
+            val probe = vals[5]
+            assertTrue(LocXXRules.applyCrossToMatch(state, 2, targetRow, probe).isFailure)
+            assertTrue(LocXXRules.applyCrossToMatch(state, 3, targetRow, probe).isFailure)
+        }
+    }
 }

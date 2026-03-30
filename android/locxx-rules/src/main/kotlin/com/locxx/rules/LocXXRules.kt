@@ -108,6 +108,20 @@ object LocXXRules {
         return idx >= 0 && idx == values.lastIndex
     }
 
+    /**
+     * Lock icon on the last cell when this color is closed for everyone (someone locked it) but this
+     * player did not take the lock bonus on their sheet — visual only; scoring has no +1 for them.
+     */
+    fun isGlobalLockBadgeOnly(row: RowId, state: PlayerRowState, value: Int, globallyLockedRows: Set<RowId>): Boolean {
+        if (row !in globallyLockedRows) return false
+        if (state.locked) return false
+        val values = rowValues(row)
+        val lastIdx = values.lastIndex
+        if (values.indexOf(value) != lastIdx) return false
+        if (lastIdx in state.crossedIndices) return false
+        return true
+    }
+
     fun applyCross(
         row: RowId,
         state: PlayerRowState,
@@ -158,20 +172,35 @@ object LocXXRules {
     fun lockedDieRemoved(row: RowId): DieColor = row.dieColor()
 
     /**
-     * Apply a cross for [playerIndex]; if the row locks, add it to [MatchState.globallyLockedRows]
-     * and remove that row's color die from [MatchState.diceInPlay].
+     * Apply a cross for [playerIndex].
+     *
+     * **Global closure:** If [row] is already in [MatchState.globallyLockedRows] from a **completed** roll phase,
+     * no one may mark that row (all four color rows: [RowId.RED], [RowId.YELLOW], [RowId.GREEN], [RowId.BLUE]).
+     * When `removeLockedColorDieImmediately` is true (single-device), the first lock also updates
+     * [MatchState.globallyLockedRows] and removes that row's color die immediately. When false (LAN / open roll),
+     * locking only updates that player's sheet until the host commits the phase with [withDerivedGlobalLocksAndDice]
+     * so everyone who could lock that row on this roll still can (Qwixx same-round behavior).
      */
-    fun applyCrossToMatch(state: MatchState, playerIndex: Int, row: RowId, value: Int): Result<MatchState> {
+    fun applyCrossToMatch(
+        state: MatchState,
+        playerIndex: Int,
+        row: RowId,
+        value: Int,
+        removeLockedColorDieImmediately: Boolean = true
+    ): Result<MatchState> {
         if (playerIndex !in state.playerSheets.indices) {
             return Result.failure(IllegalArgumentException("bad playerIndex"))
         }
         val sheet = state.playerSheets[playerIndex]
         val rowState = sheet.rows[row] ?: return Result.failure(IllegalArgumentException("bad row"))
-        val newRowState = applyCross(row, rowState, value).getOrElse { return Result.failure(it) }
-        var newSheet = sheet.copy(rows = sheet.rows + (row to newRowState))
+        if (row in state.globallyLockedRows) {
+            return Result.failure(IllegalArgumentException("row closed for all players"))
+        }
+        val newRowStateUnlocked = applyCross(row, rowState, value).getOrElse { return Result.failure(it) }
+        var newSheet = sheet.copy(rows = sheet.rows + (row to newRowStateUnlocked))
         var globallyLocked = state.globallyLockedRows
         var diceInPlay = state.diceInPlay
-        if (newRowState.locked && row !in globallyLocked) {
+        if (newRowStateUnlocked.locked && row !in globallyLocked && removeLockedColorDieImmediately) {
             globallyLocked = globallyLocked + row
             diceInPlay = diceInPlay - lockedDieRemoved(row)
         }

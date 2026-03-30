@@ -20,6 +20,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "LocXX"
-include(":bluetooth-gaming")
+include(":lan-gaming")
 include(":locxx-rules")
 include(":LocXXApp")

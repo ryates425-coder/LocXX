@@ -102,9 +102,12 @@ internal fun qwixxSkippedCellDark(row: RowId): Color = when (row) {
 
 private val SkippedCellLabelOnDark = Color(0xFFF0F0F0)
 
-private val ScoreCellFontSize = 17.sp
+private val ScoreCellFontSize = 16.sp
 
-private val ScoreCellRowHeight = 48.dp
+/** Compact rows for narrow landscape phones; tweak with [ScoreRowVerticalPadding]. */
+private val ScoreCellRowHeight = 43.dp
+
+private val ScoreRowVerticalPadding = 2.dp
 
 private fun cellNumberAnnotated(value: Int) = buildAnnotatedString {
     withStyle(SpanStyle(fontWeight = FontWeight.Normal)) {
@@ -121,7 +124,8 @@ private fun ScoreCellNumberOrLock(
     skipped: Boolean,
     color: Color,
     style: TextStyle,
-    textAlign: TextAlign
+    textAlign: TextAlign,
+    globallyLockedRows: Set<RowId> = emptySet()
 ) {
     when {
         LocXXRules.isLockCellLocked(row, rowState, value) -> {
@@ -130,6 +134,14 @@ private fun ScoreCellNumberOrLock(
                 contentDescription = "Locked",
                 modifier = Modifier.size(24.dp),
                 tint = color
+            )
+        }
+        LocXXRules.isGlobalLockBadgeOnly(row, rowState, value, globallyLockedRows) -> {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = "Row closed",
+                modifier = Modifier.size(24.dp),
+                tint = color.copy(alpha = 0.5f)
             )
         }
         skipped -> {
@@ -170,6 +182,7 @@ internal fun ScoreRowRow(
     legalMoves: List<LegalMove>,
     expandCellsToWidth: Boolean,
     qwixxRowTint: Boolean,
+    globallyLockedRows: Set<RowId> = emptySet(),
     canUndoCell: (RowId, Int) -> Boolean = { _, _ -> false },
     onCellClick: (row: RowId, value: Int, moves: List<LegalMove>) -> Unit
 ) {
@@ -183,7 +196,14 @@ internal fun ScoreRowRow(
         ),
         label = "lockGlowAlpha"
     )
-    val rowBg = if (qwixxRowTint) qwixxRowSheetTint(row) else Color.Transparent
+    val rowGloballyClosedOthers =
+        row in globallyLockedRows && !rowState.locked && rowState.crossCount == 0
+    val rowBg = if (qwixxRowTint) {
+        val base = qwixxRowSheetTint(row)
+        if (rowGloballyClosedOthers) base.copy(alpha = 0.48f) else base
+    } else {
+        Color.Transparent
+    }
     val rowShape = RoundedCornerShape(8.dp)
     val rowOutlineColor = if (qwixxRowTint) {
         qwixxRowOutline(row).copy(alpha = 0.55f)
@@ -197,7 +217,7 @@ internal fun ScoreRowRow(
             .clip(rowShape)
             .background(rowBg)
             .border(width = 1.dp, color = rowOutlineColor, shape = rowShape)
-            .padding(horizontal = 4.dp, vertical = 3.dp)
+            .padding(horizontal = 4.dp, vertical = ScoreRowVerticalPadding)
     ) {
         val values = rowValues(row)
         if (expandCellsToWidth) {
@@ -274,7 +294,8 @@ internal fun ScoreRowRow(
                                     skipped = skipped,
                                     color = cellLabelColor,
                                     style = cellStyle,
-                                    textAlign = TextAlign.Center
+                                    textAlign = TextAlign.Center,
+                                    globallyLockedRows = globallyLockedRows
                                 )
                             }
                         }
@@ -348,7 +369,8 @@ internal fun ScoreRowRow(
                             skipped = skipped,
                             color = cellLabelColor,
                             style = cellStyle,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            globallyLockedRows = globallyLockedRows
                         )
                     }
                 }

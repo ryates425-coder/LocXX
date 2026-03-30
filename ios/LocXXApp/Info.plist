@@ -28,12 +28,16 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>LocXX uses Bluetooth to connect players in the same room.</string>
-	<key>UIBackgroundModes</key>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>LocXX hosts a game session on your Wi‑Fi so other players can join.</string>
+	<key>NSBonjourServices</key>
 	<array>
-		<string>bluetooth-central</string>
-		<string>bluetooth-peripheral</string>
+		<string>_locxx._tcp</string>
 	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

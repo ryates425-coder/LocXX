@@ -109,6 +109,24 @@ object LocXXRules {
     }
 
     /**
+     * The row’s rightmost scoring cell (same as [isLockCellLocked] / lock column).
+     */
+    fun isRowLastValueCell(row: RowId, value: Int): Boolean {
+        val values = rowValues(row)
+        val idx = values.indexOf(value)
+        return idx >= 0 && idx == values.lastIndex
+    }
+
+    /**
+     * This color row is closed on this sheet (player locked it) or closed for everyone ([globallyLockedRows]).
+     */
+    fun isRowClosedOnSheet(
+        row: RowId,
+        state: PlayerRowState,
+        globallyLockedRows: Set<RowId>,
+    ): Boolean = state.locked || row in globallyLockedRows
+
+    /**
      * Lock icon on the last cell when this color is closed for everyone (someone locked it) but this
      * player did not take the lock bonus on their sheet — visual only; scoring has no +1 for them.
      */

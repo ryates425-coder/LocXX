@@ -72,11 +72,25 @@ import kotlinx.coroutines.flow.stateIn
 
 import kotlinx.coroutines.flow.update
 
+import kotlinx.coroutines.CompletableDeferred
+
+import kotlinx.coroutines.Dispatchers
+
+import kotlinx.coroutines.Job
+
 import kotlinx.coroutines.delay
+
+import kotlinx.coroutines.isActive
 
 import kotlinx.coroutines.launch
 
+import kotlinx.coroutines.withContext
+
 import kotlin.random.Random
+
+import java.net.HttpURLConnection
+
+import java.net.URL
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -84,6 +98,11 @@ import org.json.JSONObject
 
 
 data class UiPeer(val address: String, val playerId: Int, val displayName: String)
+
+
+
+/** Shown when a joiner has found a host via mDNS (before TCP hello). */
+data class JoinHostPrompt(val baseUrl: String, val hostDisplayName: String)
 
 private data class SinglePlayerUndoEntry(
     val match: MatchState,
@@ -156,6 +175,28 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         _peerJoinedPopup.value = null
 
     }
+
+
+
+    private val _joinHostPrompt = MutableStateFlow<JoinHostPrompt?>(null)
+
+    val joinHostPrompt: StateFlow<JoinHostPrompt?> = _joinHostPrompt.asStateFlow()
+
+
+
+    private val _joinAwaitingHostStart = MutableStateFlow(false)
+
+    val joinAwaitingHostStart: StateFlow<Boolean> = _joinAwaitingHostStart.asStateFlow()
+
+
+
+    private val _joinSessionHostDisplayName = MutableStateFlow("")
+
+    val joinSessionHostDisplayName: StateFlow<String> = _joinSessionHostDisplayName.asStateFlow()
+
+
+
+    private var joinDiscoveryJob: Job? = null
 
 
 
@@ -385,7 +426,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
 
 
-    enum class Role { Host, Client, SinglePlayer }
+    enum class Role { Host, Client, SinglePlayer, JoinSearching }
 
 
 
@@ -499,7 +540,18 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
                             if (_role.value == Role.Client) {
 
-                                _hostEndedSessionMessage.value = "The host has left the game."
+                                val hostLabel = _joinSessionHostDisplayName.value.trim().ifBlank {
+
+                                    _lanPlayerDisplayNames.value.getOrNull(0)?.trim().orEmpty()
+
+                                }.ifBlank { "The host" }
+
+                                _joinAwaitingHostStart.value = false
+
+                                _joinSessionHostDisplayName.value = ""
+
+                                _hostEndedSessionMessage.value =
+                                    "$hostLabel is no longer hosting."
 
                                 stopAll(preserveHostEndedMessage = true)
 
@@ -553,11 +605,17 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val h = LanGamingHost(listener)
 
+        h.advertisedHostDisplayName = displayName.trim()
+
         host = h
 
         if (h.beginHosting()) {
 
-            val adv = LocxxMdnsAdvertiser(getApplication(), LOCXX_LAN_PORT) { msg ->
+            val adv = LocxxMdnsAdvertiser(
+                getApplication(),
+                LOCXX_LAN_PORT,
+                displayName.trim(),
+            ) { msg ->
 
                 appendLog("error: $msg")
 
@@ -579,6 +637,10 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startSinglePlayer(displayName: String? = null) {
 
+        joinDiscoveryJob?.cancel()
+
+        joinDiscoveryJob = null
+
         val resolvedName = when {
 
             !displayName.isNullOrBlank() -> displayName
@@ -589,8 +651,6 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         }
 
-        // Tear down LAN without setting [role] to null — a transient null + gameBoardOpen false
-        // retriggers auto matchmaking in MainActivity and reconnects host/client.
         tearDownNetworkingAndLanGameState(preserveHostEndedMessage = false)
 
         _sessionDisplayName.value = resolvedName ?: "Player"
@@ -639,7 +699,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
             shouldAcceptResolved = { _, _ -> true },
 
-            onResolved = { hostForUrl, port ->
+            onResolved = { hostForUrl, port, _ ->
 
                 if (_role.value != Role.Client) return@LocxxMdnsBrowser
 
@@ -685,6 +745,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val h = LanGamingHost(listener)
 
+        h.advertisedHostDisplayName = displayName.trim()
+
         host = h
 
         if (!h.beginHosting()) {
@@ -697,7 +759,11 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         }
 
-        val adv = LocxxMdnsAdvertiser(getApplication(), LOCXX_LAN_PORT) { msg ->
+        val adv = LocxxMdnsAdvertiser(
+            getApplication(),
+            LOCXX_LAN_PORT,
+            displayName.trim(),
+        ) { msg ->
 
             appendLog("error: $msg")
 
@@ -725,7 +791,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
             },
 
-            onResolved = { hostForUrl, port ->
+            onResolved = { hostForUrl, port, _ ->
 
                 switchAutoHostToClient(hostForUrl, port, displayName)
 
@@ -952,11 +1018,310 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopAll(preserveHostEndedMessage: Boolean = false) {
 
+        joinDiscoveryJob?.cancel()
+
+        joinDiscoveryJob = null
+
+        _joinHostPrompt.value = null
+
+        _joinAwaitingHostStart.value = false
+
+        _joinSessionHostDisplayName.value = ""
+
         tearDownNetworkingAndLanGameState(preserveHostEndedMessage)
 
         _role.value = null
 
         _sessionDisplayName.value = ""
+
+    }
+
+
+
+    /** Host: stop advertising and notify joined clients (landing page). */
+    fun stopHostingLobby() {
+
+        if (_role.value != Role.Host) return
+
+        val nameKeep = _sessionDisplayName.value
+
+        tearDownNetworkingAndLanGameState(preserveHostEndedMessage = false)
+
+        _role.value = null
+
+        _sessionDisplayName.value = nameKeep
+
+    }
+
+
+
+    /** Join flow: discover hosts until one is found, then expose [joinHostPrompt]. */
+    fun startJoinHostDiscovery(displayName: String) {
+
+        joinDiscoveryJob?.cancel()
+
+        if (_role.value == Role.Host) {
+
+            appendLog("cannot join while hosting")
+
+            return
+
+        }
+
+        stopAll()
+
+        val trimmed = displayName.trim()
+
+        _sessionDisplayName.value = trimmed
+
+        _role.value = Role.JoinSearching
+
+        joinDiscoveryJob = viewModelScope.launch {
+
+            while (isActive && _role.value == Role.JoinSearching && _joinHostPrompt.value == null) {
+
+                val found = discoverOneHostAddress(28_000L)
+
+                if (!isActive || _role.value != Role.JoinSearching) break
+
+                if (found == null) {
+
+                    delay(1_600)
+
+                    continue
+
+                }
+
+                val url =
+                    "http://${found.host}:${found.port}".trimEnd('/')
+
+                val hostLabel = resolveJoinHostDisplayName(url, found.txtDisplayName)
+
+                if (!isActive || _role.value != Role.JoinSearching) break
+
+                _joinHostPrompt.value = JoinHostPrompt(url, hostLabel)
+
+            }
+
+        }
+
+    }
+
+
+
+    /** Cancel join browsing or dismiss the “join this host?” offer without connecting. */
+    fun cancelJoinHostFlow() {
+
+        joinDiscoveryJob?.cancel()
+
+        joinDiscoveryJob = null
+
+        _joinHostPrompt.value = null
+
+        if (_role.value == Role.JoinSearching) {
+
+            _role.value = null
+
+        }
+
+    }
+
+
+
+    fun acceptJoinHostOffer(prompt: JoinHostPrompt) {
+
+        joinDiscoveryJob?.cancel()
+
+        joinDiscoveryJob = null
+
+        _joinHostPrompt.value = null
+
+        val label = prompt.hostDisplayName.trim().ifBlank { "Host" }
+
+        _joinSessionHostDisplayName.value = label
+
+        _joinAwaitingHostStart.value = true
+
+        connectClientToHostUrl(_sessionDisplayName.value, prompt.baseUrl)
+
+    }
+
+
+
+    fun cancelClientWaitForHost() {
+
+        _joinAwaitingHostStart.value = false
+
+        _joinSessionHostDisplayName.value = ""
+
+        if (_role.value != Role.Client) return
+
+        val nameKeep = _sessionDisplayName.value
+
+        client?.disconnect()
+
+        tearDownNetworkingAndLanGameState(preserveHostEndedMessage = false)
+
+        _role.value = null
+
+        _sessionDisplayName.value = nameKeep
+
+    }
+
+
+
+    fun clearJoinAwaitingHostStart() {
+
+        _joinAwaitingHostStart.value = false
+
+        _joinSessionHostDisplayName.value = ""
+
+    }
+
+
+
+    private data class LocxxDiscoveredLanHost(
+        val host: String,
+        val port: Int,
+        val txtDisplayName: String?,
+    )
+
+
+
+    private suspend fun discoverOneHostAddress(timeoutMs: Long): LocxxDiscoveredLanHost? {
+
+        val deferred = CompletableDeferred<LocxxDiscoveredLanHost?>()
+
+        var browser: LocxxMdnsBrowser? = null
+
+        browser = LocxxMdnsBrowser(
+
+            getApplication(),
+
+            Handler(Looper.getMainLooper()),
+
+            shouldAcceptResolved = { _, _ -> true },
+
+            onResolved = { hostStr, port, txt ->
+
+                if (deferred.complete(LocxxDiscoveredLanHost(hostStr, port, txt))) {
+
+                    browser?.stop()
+
+                }
+
+            },
+
+            onError = { msg -> appendLog("join browse: $msg") }
+
+        )
+
+        browser.start()
+
+        val timeoutJob = viewModelScope.launch {
+
+            delay(timeoutMs)
+
+            if (deferred.complete(null)) {
+
+                browser?.stop()
+
+            }
+
+        }
+
+        val out = deferred.await()
+
+        timeoutJob.cancel()
+
+        browser?.stop()
+
+        return out
+
+    }
+
+
+
+    /** Prefer mDNS TXT `dn` (API 34+); otherwise fetch [session_info] with short retries (server may not be ready immediately). */
+    private suspend fun resolveJoinHostDisplayName(
+        baseUrl: String,
+        mdnsTxtDisplayName: String?,
+    ): String {
+
+        mdnsTxtDisplayName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+
+        repeat(8) { attempt ->
+
+            val n = runCatching { fetchHostSessionInfo(baseUrl) }.getOrElse { "Host" }.trim()
+
+            if (n.isNotEmpty() && n != "Host") return n
+
+            if (attempt < 7) delay(300L)
+
+        }
+
+        return runCatching { fetchHostSessionInfo(baseUrl) }.getOrElse { "Host" }.trim()
+            .ifBlank { "Host" }
+
+    }
+
+
+
+    private suspend fun fetchHostSessionInfo(baseUrl: String): String =
+
+        withContext(Dispatchers.IO) {
+
+            val root = baseUrl.trim().trimEnd('/')
+
+            val conn = (URL("$root/locxx/v1/session_info").openConnection() as HttpURLConnection).apply {
+
+                requestMethod = "GET"
+
+                connectTimeout = 6_000
+
+                readTimeout = 6_000
+
+            }
+
+            try {
+
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) return@withContext "Host"
+
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+
+                JSONObject(text).optString("hostDisplayName").trim().ifBlank { "Host" }
+
+            } catch (_: Exception) {
+
+                "Host"
+
+            } finally {
+
+                conn.disconnect()
+
+            }
+
+        }
+
+
+
+    private fun connectClientToHostUrl(displayName: String, baseUrl: String) {
+
+        _sessionDisplayName.value = displayName
+
+        _role.value = Role.Client
+
+        _localPlayerIndex.value = 0
+
+        val c = LanGamingClient(listener)
+
+        c.displayName = displayName
+
+        client = c
+
+        appendLog("connecting to ${baseUrl.trimEnd('/')}…")
+
+        c.connect(baseUrl.trimEnd('/'))
 
     }
 

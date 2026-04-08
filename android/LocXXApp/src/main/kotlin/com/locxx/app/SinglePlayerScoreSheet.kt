@@ -121,7 +121,8 @@ private fun ScoreCellNumberOrLock(
     rowState: PlayerRowState,
     value: Int,
     crossed: Boolean,
-    skipped: Boolean,
+    /** Paper skipped or closed row: show same “---” / styling as skipped. */
+    skippedAppearance: Boolean,
     color: Color,
     style: TextStyle,
     textAlign: TextAlign,
@@ -144,7 +145,15 @@ private fun ScoreCellNumberOrLock(
                 tint = color.copy(alpha = 0.5f)
             )
         }
-        skipped -> {
+        crossed -> {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Marked",
+                modifier = Modifier.size(24.dp),
+                tint = color
+            )
+        }
+        skippedAppearance -> {
             Text(
                 text = "\u2014\u2014\u2014",
                 textAlign = textAlign,
@@ -152,14 +161,6 @@ private fun ScoreCellNumberOrLock(
                 overflow = TextOverflow.Clip,
                 color = color,
                 style = style.copy(fontWeight = FontWeight.Medium)
-            )
-        }
-        crossed -> {
-            Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "Marked",
-                modifier = Modifier.size(24.dp),
-                tint = color
             )
         }
         else -> {
@@ -232,7 +233,13 @@ internal fun ScoreRowRow(
                     for (i in values.indices) {
                         val value = values[i]
                         val crossed = LocXXRules.isValueCrossed(row, rowState, value)
-                        val skipped = LocXXRules.isValueSkipped(row, rowState, value)
+                        val paperSkipped = LocXXRules.isValueSkipped(row, rowState, value)
+                        val skippedAppearance = paperSkipped ||
+                            (
+                                LocXXRules.isRowClosedOnSheet(row, rowState, globallyLockedRows) &&
+                                    !crossed &&
+                                    !LocXXRules.isRowLastValueCell(row, value)
+                                )
                         val lockPulse = LocXXRules.isLockCellReadyToMark(row, rowState, value)
                         val moves = movesForCell(legalMoves, row, value)
                         val highlight = moves.isNotEmpty()
@@ -243,12 +250,12 @@ internal fun ScoreRowRow(
                         val bg = when {
                             crossed -> MaterialTheme.colorScheme.tertiaryContainer
                             highlight -> MaterialTheme.colorScheme.primaryContainer
-                            skipped && qwixxRowTint -> qwixxSkippedCellDark(row)
-                            skipped -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
+                            skippedAppearance && qwixxRowTint -> qwixxSkippedCellDark(row)
+                            skippedAppearance -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
                             else -> defaultCell
                         }
                         val cellLabelColor = when {
-                            skipped && qwixxRowTint -> SkippedCellLabelOnDark
+                            skippedAppearance && qwixxRowTint -> SkippedCellLabelOnDark
                             else -> MaterialTheme.colorScheme.onSurface
                         }
                         val crossedOutline = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
@@ -291,7 +298,7 @@ internal fun ScoreRowRow(
                                     rowState = rowState,
                                     value = value,
                                     crossed = crossed,
-                                    skipped = skipped,
+                                    skippedAppearance = skippedAppearance,
                                     color = cellLabelColor,
                                     style = cellStyle,
                                     textAlign = TextAlign.Center,
@@ -312,7 +319,13 @@ internal fun ScoreRowRow(
                 for (i in values.indices) {
                     val value = values[i]
                     val crossed = LocXXRules.isValueCrossed(row, rowState, value)
-                    val skipped = LocXXRules.isValueSkipped(row, rowState, value)
+                    val paperSkipped = LocXXRules.isValueSkipped(row, rowState, value)
+                    val skippedAppearance = paperSkipped ||
+                        (
+                            LocXXRules.isRowClosedOnSheet(row, rowState, globallyLockedRows) &&
+                                !crossed &&
+                                !LocXXRules.isRowLastValueCell(row, value)
+                            )
                     val lockPulse = LocXXRules.isLockCellReadyToMark(row, rowState, value)
                     val moves = movesForCell(legalMoves, row, value)
                     val highlight = moves.isNotEmpty()
@@ -323,12 +336,12 @@ internal fun ScoreRowRow(
                     val cellBg = when {
                         crossed -> MaterialTheme.colorScheme.tertiaryContainer
                         highlight -> MaterialTheme.colorScheme.primaryContainer
-                        skipped && qwixxRowTint -> qwixxSkippedCellDark(row)
-                        skipped -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
+                        skippedAppearance && qwixxRowTint -> qwixxSkippedCellDark(row)
+                        skippedAppearance -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
                         else -> defaultCell
                     }
                     val cellLabelColor = when {
-                        skipped && qwixxRowTint -> SkippedCellLabelOnDark
+                        skippedAppearance && qwixxRowTint -> SkippedCellLabelOnDark
                         else -> MaterialTheme.colorScheme.onSurface
                     }
                     val primaryGlowScroll = MaterialTheme.colorScheme.primary
@@ -366,7 +379,7 @@ internal fun ScoreRowRow(
                             rowState = rowState,
                             value = value,
                             crossed = crossed,
-                            skipped = skipped,
+                            skippedAppearance = skippedAppearance,
                             color = cellLabelColor,
                             style = cellStyle,
                             textAlign = TextAlign.Center,

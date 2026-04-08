@@ -4,7 +4,9 @@ import android.os.Handler
 import android.os.Looper
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
+import java.nio.charset.StandardCharsets
 import java.util.UUID
+import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -31,6 +33,10 @@ class LanGamingHost(
      * Binary game frames are tiny; gzip is unnecessary here.
      */
     override fun useGzipWhenAccepted(r: Response): Boolean = false
+
+    /** Shown to joining players before they connect ([serveSessionInfo]). */
+    @Volatile
+    var advertisedHostDisplayName: String = ""
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val sessionNonce: ByteArray = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
@@ -85,6 +91,7 @@ class LanGamingHost(
                 }
                 Method.GET -> when (path) {
                     "/locxx/v1/poll" -> servePoll(session)
+                    "/locxx/v1/session_info" -> serveSessionInfo()
                     else -> notFound()
                 }
                 else -> notFound()
@@ -130,7 +137,8 @@ class LanGamingHost(
     }
 
     private fun serveSend(session: IHTTPSession): Response {
-        val token = session.parms["token"] ?: return text(Response.Status.BAD_REQUEST, "token")
+        val token = session.parameters["token"]?.firstOrNull()
+            ?: return text(Response.Status.BAD_REQUEST, "token")
         val peer = tokenToPeer[token] ?: return text(Response.Status.NOT_FOUND, "unknown token")
         val body = readRequestBody(session)
         val decoded = ProtocolCodec.decodeFrame(body).getOrElse {
@@ -149,7 +157,8 @@ class LanGamingHost(
     }
 
     private fun servePoll(session: IHTTPSession): Response {
-        val token = session.parms["token"] ?: return text(Response.Status.BAD_REQUEST, "token")
+        val token = session.parameters["token"]?.firstOrNull()
+            ?: return text(Response.Status.BAD_REQUEST, "token")
         val peer = tokenToPeer[token] ?: return text(Response.Status.NOT_FOUND, "unknown token")
         val frame = peer.outbound.poll(55, TimeUnit.SECONDS)
         return if (frame == null) {
@@ -165,6 +174,19 @@ class LanGamingHost(
     }
 
     private fun notFound(): Response = text(Response.Status.NOT_FOUND, "not found")
+
+    private fun serveSessionInfo(): Response {
+        val json = JSONObject().apply {
+            put("hostDisplayName", advertisedHostDisplayName)
+        }
+        val bytes = json.toString().toByteArray(StandardCharsets.UTF_8)
+        return newFixedLengthResponse(
+            Response.Status.OK,
+            "application/json; charset=utf-8",
+            ByteArrayInputStream(bytes),
+            bytes.size.toLong()
+        )
+    }
 
     private fun text(status: Response.Status, msg: String): Response =
         newFixedLengthResponse(status, NanoHTTPD.MIME_PLAINTEXT, msg)

@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -64,8 +65,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.locxx.rules.DiceRoll
-import com.locxx.rules.MatchState
 import kotlin.random.Random
 import kotlinx.coroutines.delay
 
@@ -174,11 +173,13 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
     val log by vm.log.collectAsState()
     val peers by vm.peers.collectAsState()
     val match by vm.match.collectAsState()
-    val lastRoll by vm.lastRoll.collectAsState()
     val role by vm.role.collectAsState()
     val lanSessionPlayStarted by vm.lanSessionPlayStarted.collectAsState()
     val hostEndedSessionMessage by vm.hostEndedSessionMessage.collectAsState()
     val peerJoinedPopup by vm.peerJoinedPopup.collectAsState()
+    val joinHostPrompt by vm.joinHostPrompt.collectAsState()
+    val joinAwaitingHostStart by vm.joinAwaitingHostStart.collectAsState()
+    val joinSessionHostDisplayName by vm.joinSessionHostDisplayName.collectAsState()
     val context = LocalContext.current
 
     DisposableEffect(Unit) {
@@ -196,16 +197,19 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
         prefsReady = true
     }
 
-    LaunchedEffect(prefsReady, role, gameBoardOpen) {
+    LaunchedEffect(prefsReady) {
         if (!prefsReady) return@LaunchedEffect
-        if (gameBoardOpen) return@LaunchedEffect
-        if (role != null) return@LaunchedEffect
         val chosen = displayNameForNewSession(name)
         if (chosen != name) {
             name = chosen
             context.applicationContext.saveDisplayName(chosen)
         }
-        vm.startAutoLanMatchmaking(chosen)
+    }
+
+    LaunchedEffect(lanSessionPlayStarted, joinAwaitingHostStart) {
+        if (lanSessionPlayStarted && joinAwaitingHostStart) {
+            vm.clearJoinAwaitingHostStart()
+        }
     }
 
     LaunchedEffect(role) {
@@ -230,7 +234,8 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
 
     LaunchedEffect(showGameStartingCountdown) {
         if (!showGameStartingCountdown) return@LaunchedEffect
-        delay(3_000)
+        // Keep in sync with [GameStartingCountdownDialog]: slide + 3×1s + 4×200ms + 3×1ms gaps + slide (~4.56s).
+        delay(4_600)
         showGameStartingCountdown = false
         gameBoardOpen = true
     }
@@ -246,7 +251,6 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
         )
     } else {
         LocXXLandingContent(
-            vm = vm,
             name = name,
             onNameChange = {
                 name = it
@@ -254,13 +258,30 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
             },
             log = log,
             peers = peers,
-            match = match,
-            lastRoll = lastRoll,
             role = role,
-            onStartMultiplayerGame = {
+            showJoinSearching = role == LocXXViewModel.Role.JoinSearching && joinHostPrompt == null,
+            onStartHostedGame = {
                 vm.broadcastLanGameStarted()
                 showGameStartingCountdown = true
             },
+            onHostGame = {
+                val chosen = displayNameForNewSession(name)
+                if (chosen != name) {
+                    name = chosen
+                    context.applicationContext.saveDisplayName(chosen)
+                }
+                vm.startHost(chosen)
+            },
+            onJoinGame = {
+                val chosen = displayNameForNewSession(name)
+                if (chosen != name) {
+                    name = chosen
+                    context.applicationContext.saveDisplayName(chosen)
+                }
+                vm.startJoinHostDiscovery(chosen)
+            },
+            onCancelJoinSearch = { vm.cancelJoinHostFlow() },
+            onStopHosting = { vm.stopHostingLobby() },
             onOpenScoreSheet = { gameBoardOpen = true },
             onPlayOffline = {
                 val chosen = displayNameForNewSession(name)
@@ -286,11 +307,54 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
     hostEndedSessionMessage?.let { message ->
         AlertDialog(
             onDismissRequest = { vm.dismissHostEndedMessage() },
-            title = { Text("Host ended the session") },
+            title = { Text("Host stopped") },
             text = { Text(message) },
             confirmButton = {
                 TextButton(onClick = { vm.dismissHostEndedMessage() }) {
                     Text("OK")
+                }
+            }
+        )
+    }
+
+    val showJoinDialog =
+        joinHostPrompt != null ||
+            (joinAwaitingHostStart && role == LocXXViewModel.Role.Client)
+    if (showJoinDialog) {
+        val offer = joinHostPrompt
+        AlertDialog(
+            onDismissRequest = {
+                if (offer != null) vm.cancelJoinHostFlow()
+            },
+            properties = DialogProperties(
+                dismissOnBackPress = offer != null,
+                dismissOnClickOutside = offer != null
+            ),
+            title = { Text("Join game") },
+            text = {
+                when {
+                    offer != null ->
+                        Text("Would you like to join ${offer.hostDisplayName}'s game?")
+                    else ->
+                        Text("Waiting on $joinSessionHostDisplayName to start the game")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        if (offer != null) vm.cancelJoinHostFlow()
+                        else vm.cancelClientWaitForHost()
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = offer != null,
+                    onClick = { if (offer != null) vm.acceptJoinHostOffer(offer) }
+                ) {
+                    Text("Yes")
                 }
             }
         )
@@ -381,6 +445,8 @@ private fun GameStartingCountdownDialog(onFinished: () -> Unit) {
         delay(1_000)
         playLocxxGameStartCountdownBeep(2)
         delay(1_000)
+        playLocxxGameStartCountdownBeep(3)
+        delay(803)
         slide.animateTo(
             targetValue = 1f,
             animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing)
@@ -391,15 +457,17 @@ private fun GameStartingCountdownDialog(onFinished: () -> Unit) {
 
 @Composable
 private fun LocXXLandingContent(
-    vm: LocXXViewModel,
     name: String,
     onNameChange: (String) -> Unit,
     log: List<String>,
     peers: List<UiPeer>,
-    match: MatchState?,
-    lastRoll: DiceRoll?,
     role: LocXXViewModel.Role?,
-    onStartMultiplayerGame: () -> Unit,
+    showJoinSearching: Boolean,
+    onStartHostedGame: () -> Unit,
+    onHostGame: () -> Unit,
+    onJoinGame: () -> Unit,
+    onCancelJoinSearch: () -> Unit,
+    onStopHosting: () -> Unit,
     onOpenScoreSheet: () -> Unit,
     onPlayOffline: () -> Unit,
     onExitApp: () -> Unit
@@ -440,8 +508,12 @@ private fun LocXXLandingContent(
                         onNameChange = onNameChange,
                         role = role,
                         peers = peers,
-                        match = match,
-                        onStartMultiplayerGame = onStartMultiplayerGame,
+                        showJoinSearching = showJoinSearching,
+                        onStartHostedGame = onStartHostedGame,
+                        onHostGame = onHostGame,
+                        onJoinGame = onJoinGame,
+                        onCancelJoinSearch = onCancelJoinSearch,
+                        onStopHosting = onStopHosting,
                         onPlayOffline = onPlayOffline,
                         onExitApp = onExitApp,
                         tallEnough = tallEnough,
@@ -453,11 +525,7 @@ private fun LocXXLandingContent(
                             .fillMaxWidth()
                     )
                     LanSessionExtras(
-                        vm = vm,
                         role = role,
-                        match = match,
-                        lastRoll = lastRoll,
-                        peers = peers,
                         onOpenScoreSheet = onOpenScoreSheet,
                         compact = compact
                     )
@@ -485,8 +553,12 @@ private fun LocXXLandingContent(
                     onNameChange = onNameChange,
                     role = role,
                     peers = peers,
-                    match = match,
-                    onStartMultiplayerGame = onStartMultiplayerGame,
+                    showJoinSearching = showJoinSearching,
+                    onStartHostedGame = onStartHostedGame,
+                    onHostGame = onHostGame,
+                    onJoinGame = onJoinGame,
+                    onCancelJoinSearch = onCancelJoinSearch,
+                    onStopHosting = onStopHosting,
                     onPlayOffline = onPlayOffline,
                     onExitApp = onExitApp,
                     tallEnough = tallEnough,
@@ -498,11 +570,7 @@ private fun LocXXLandingContent(
                         .fillMaxWidth()
                 )
                 LanSessionExtras(
-                    vm = vm,
                     role = role,
-                    match = match,
-                    lastRoll = lastRoll,
-                    peers = peers,
                     onOpenScoreSheet = onOpenScoreSheet,
                     compact = compact
                 )
@@ -529,8 +597,12 @@ private fun LocLandingBrandingAndControls(
     onNameChange: (String) -> Unit,
     role: LocXXViewModel.Role?,
     peers: List<UiPeer>,
-    match: MatchState?,
-    onStartMultiplayerGame: () -> Unit,
+    showJoinSearching: Boolean,
+    onStartHostedGame: () -> Unit,
+    onHostGame: () -> Unit,
+    onJoinGame: () -> Unit,
+    onCancelJoinSearch: () -> Unit,
+    onStopHosting: () -> Unit,
     onPlayOffline: () -> Unit,
     onExitApp: () -> Unit,
     tallEnough: Boolean,
@@ -539,6 +611,28 @@ private fun LocLandingBrandingAndControls(
     onTitleDoubleClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val btnColors = ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary
+    )
+    val secondaryBtn = ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.colorScheme.secondary,
+        contentColor = MaterialTheme.colorScheme.onSecondary
+    )
+    val canHostOrStart =
+        role == null ||
+            role == LocXXViewModel.Role.Host ||
+            role == LocXXViewModel.Role.SinglePlayer
+    val hostPrimaryLabel =
+        if (role == LocXXViewModel.Role.Host && peers.isNotEmpty()) "Start Game" else "Host a Game"
+    val hostPrimaryAction =
+        if (role == LocXXViewModel.Role.Host && peers.isNotEmpty()) onStartHostedGame else onHostGame
+    val hostPrimaryEnabled =
+        when (role) {
+            LocXXViewModel.Role.Host -> peers.isNotEmpty()
+            null, LocXXViewModel.Role.SinglePlayer -> true
+            else -> false
+        }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -572,7 +666,7 @@ private fun LocLandingBrandingAndControls(
                 .fillMaxWidth()
                 .padding(horizontal = 4.dp)
         )
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
         OutlinedTextField(
             value = name,
             onValueChange = onNameChange,
@@ -595,51 +689,123 @@ private fun LocLandingBrandingAndControls(
                 focusedLabelColor = MaterialTheme.colorScheme.primary
             )
         )
-        Spacer(Modifier.weight(1f))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.Bottom,
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            val btnColors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            )
-            val canStartMultiplayer =
-                role == LocXXViewModel.Role.Host && match != null && peers.isNotEmpty()
-            Button(
-                onClick = onStartMultiplayerGame,
-                enabled = canStartMultiplayer,
-                modifier = Modifier.weight(1f),
-                colors = btnColors,
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = btnPad
-            ) {
+            if (role == LocXXViewModel.Role.Host && peers.isNotEmpty()) {
                 Text(
-                    "Multiplayer Game",
-                    maxLines = 2,
-                    style = MaterialTheme.typography.labelLarge,
-                    textAlign = TextAlign.Center
+                    text = peers.joinToString(separator = "\n") { peer ->
+                        val label =
+                            peer.displayName.trim().ifBlank { "Player ${peer.playerId + 1}" }
+                        "Player: $label"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = if (compact) 4.dp else 6.dp)
                 )
             }
-            Button(
-                onClick = onPlayOffline,
-                enabled = role != LocXXViewModel.Role.SinglePlayer,
-                modifier = Modifier.weight(1f),
-                colors = btnColors,
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = btnPad
-            ) { Text("Single Player", maxLines = 1) }
-            Button(
-                onClick = onExitApp,
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary,
-                    contentColor = MaterialTheme.colorScheme.onSecondary
-                ),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = btnPad
-            ) { Text("Exit", maxLines = 1) }
+            if (showJoinSearching) {
+                Text(
+                    text = "Looking for a game to join...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Cancel",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onCancelJoinSearch() }
+                )
+            }
+            if (role == LocXXViewModel.Role.Host) {
+                if (peers.isEmpty()) {
+                    Text(
+                        text = "Waiting for players to join the game...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = if (compact) 4.dp else 6.dp)
+                    )
+                }
+                Text(
+                    text = "Stop hosting",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onStopHosting() }
+                )
+            }
+        }
+        Spacer(Modifier.height(if (compact) 6.dp else 8.dp))
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = hostPrimaryAction,
+                    enabled = canHostOrStart && hostPrimaryEnabled,
+                    modifier = Modifier.weight(1f),
+                    colors = btnColors,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = btnPad
+                ) {
+                    Text(
+                        hostPrimaryLabel,
+                        maxLines = 2,
+                        style = MaterialTheme.typography.labelLarge,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Button(
+                    onClick = onJoinGame,
+                    enabled = role == null || role == LocXXViewModel.Role.SinglePlayer,
+                    modifier = Modifier.weight(1f),
+                    colors = btnColors,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = btnPad
+                ) {
+                    Text("Join a Game", maxLines = 2, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onPlayOffline,
+                    enabled = role == null,
+                    modifier = Modifier.weight(1f),
+                    colors = btnColors,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = btnPad
+                ) {
+                    Text("Single Player Game", maxLines = 1)
+                }
+                Button(
+                    onClick = onExitApp,
+                    modifier = Modifier.weight(1f),
+                    colors = secondaryBtn,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = btnPad
+                ) {
+                    Text("Quit", maxLines = 1)
+                }
+            }
         }
     }
 }
@@ -690,85 +856,20 @@ private fun LocLandingLogPanel(
 
 @Composable
 private fun LanSessionExtras(
-    vm: LocXXViewModel,
     role: LocXXViewModel.Role?,
-    match: MatchState?,
-    lastRoll: DiceRoll?,
-    peers: List<UiPeer>,
     onOpenScoreSheet: () -> Unit,
     compact: Boolean = false
 ) {
-    if (role == null) return
+    if (role != LocXXViewModel.Role.SinglePlayer) return
 
     Spacer(Modifier.height(if (compact) 6.dp else 12.dp))
 
-    if (role == LocXXViewModel.Role.Host) {
-        val canStartGame = match != null && peers.isNotEmpty()
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = if (canStartGame) {
-                    "When everyone is ready, tap Multiplayer Game at the top."
-                } else {
-                    "Waiting for other players to join..."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        }
-    }
-
-    if (role == LocXXViewModel.Role.SinglePlayer) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Button(onClick = onOpenScoreSheet) { Text("Open score sheet") }
-        }
-    }
-
-    if (role == LocXXViewModel.Role.Client && match != null) {
-        val playStarted by vm.lanSessionPlayStarted.collectAsState()
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = if (playStarted) {
-                    "The host started the game — opening the score sheet…"
-                } else {
-                    "Connected. Waiting for the host to start the game…"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        }
-    }
-
-    if (role != LocXXViewModel.Role.SinglePlayer) {
-        lastRoll?.let { r ->
-            Text(
-                text = "Last roll: W1=${r.white1} W2=${r.white2} R=${r.red} Y=${r.yellow} G=${r.green} B=${r.blue}  sum=${r.whiteSum()}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            text = "Peers: ${peers.joinToString { "${it.displayName}#${it.playerId}" }}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Button(onClick = onOpenScoreSheet) { Text("Open score sheet") }
     }
 }

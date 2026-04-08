@@ -251,22 +251,19 @@ fun SinglePlayerGameScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (lanMp && playerCount > 1) {
-                        val m = match
-                        if (m != null) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(opponentHeaderScroll)
-                            ) {
-                                MultiplayerOpponentSummaries(
-                                    match = m,
-                                    localPlayerIndex = localPlayerIndex,
-                                    lockReadyHintBySeat = lanLockReadyBySeat,
-                                    seatDisplayName = { vm.seatDisplayName(it) }
-                                )
-                            }
-                            Spacer(Modifier.height(2.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(opponentHeaderScroll)
+                        ) {
+                            MultiplayerOpponentSummaries(
+                                match = match,
+                                localPlayerIndex = localPlayerIndex,
+                                lockReadyHintBySeat = lanLockReadyBySeat,
+                                seatDisplayName = { vm.seatDisplayName(it) }
+                            )
                         }
+                        Spacer(Modifier.height(2.dp))
                     }
                     RowId.entries.forEach { row ->
                         ScoreRowRow(

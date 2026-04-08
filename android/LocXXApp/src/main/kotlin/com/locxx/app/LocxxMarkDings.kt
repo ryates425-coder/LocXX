@@ -6,6 +6,7 @@ import android.media.AudioTrack
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.exp
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
@@ -81,14 +82,65 @@ fun playLocxxMarkDing() {
     playMarkDingPcm(synthMarkDing(LocxxMarkDingConfig.variant))
 }
 
-/** LAN “game about to start” countdown: [step] 0 = lowest tone, 2 = highest (short beeps, ascending). */
+/**
+ * LAN “game about to start” countdown: [step] 0 = lowest, 2 = highest (short ascending beeps);
+ * 3 = four short tones (200ms each), 1ms rest between, pitch just above step 2 (E5).
+ */
 fun playLocxxGameStartCountdownBeep(step: Int) {
-    val hz = when (step.coerceIn(0, 2)) {
-        0 -> 392.0 // G4
-        1 -> 523.25 // C5
-        else -> 659.25 // E5
+    when (step.coerceIn(0, 3)) {
+        3 -> playMarkDingPcm(synthGameStartFourLongTones())
+        else -> {
+            val hz = when (step) {
+                0 -> 392.0 // G4
+                1 -> 523.25 // C5
+                else -> GAME_START_THIRD_BEEP_HZ // E5
+            }
+            playMarkDingPcm(synthCountdownBeep(hz))
+        }
     }
-    playMarkDingPcm(synthCountdownBeep(hz))
+}
+
+/** Must stay a hair above [synthCountdownBeep] step 2 (E5 659.25 Hz). */
+private const val GAME_START_THIRD_BEEP_HZ = 659.25
+
+/** ~30 cents sharp of E5 — audibly “a little higher” than the third beep. */
+private val GAME_START_LAST_TONE_HZ =
+    GAME_START_THIRD_BEEP_HZ * 2.0.pow(30.0 / 1200.0)
+
+/** One sustained sine for [durationSec], with short faded edges to avoid clicks. */
+private fun synthGameStartSustainedTone(fHz: Double, durationSec: Double): FloatArray {
+    val n = (SAMPLE_RATE * durationSec).toInt().coerceAtLeast(1)
+    val out = FloatArray(n)
+    val twoPi = 2.0 * PI
+    val edge = (SAMPLE_RATE * 0.012).toInt().coerceAtLeast(1)
+    for (i in 0 until n) {
+        val t = i / SAMPLE_RATE.toDouble()
+        val aIn = (i + 1).toFloat() / edge
+        val aOut = (n - i).toFloat() / edge
+        val env = minOf(1f, aIn, aOut).toDouble()
+        out[i] = (sin(twoPi * fHz * t) * env * 0.72).toFloat().coerceIn(-1f, 1f)
+    }
+    return out
+}
+
+private fun synthGameStartFourLongTones(): FloatArray {
+    val toneSec = 0.2
+    val gapSec = 0.001
+    val tone = synthGameStartSustainedTone(GAME_START_LAST_TONE_HZ, toneSec)
+    val gapLen = (SAMPLE_RATE * gapSec).toInt().coerceAtLeast(0)
+    val gap = FloatArray(gapLen)
+    val total = tone.size * 4 + gapLen * 3
+    val out = FloatArray(total)
+    var o = 0
+    repeat(4) { i ->
+        tone.copyInto(out, o)
+        o += tone.size
+        if (i < 3) {
+            gap.copyInto(out, o)
+            o += gap.size
+        }
+    }
+    return out
 }
 
 private fun synthCountdownBeep(fHz: Double, durationSec: Double = 0.11): FloatArray {

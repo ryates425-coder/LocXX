@@ -8,6 +8,18 @@ import android.os.Handler
 
 import android.os.Looper
 
+import com.locxx.app.BuildConfig
+
+import com.locxx.app.nakama.LocxxNakamaSession
+
+import com.locxx.app.nakama.LOCXX_NAKAMA_ROOM_CODE_LEN
+
+import com.locxx.app.nakama.locxxNakamaDeviceId
+
+import com.locxx.app.nakama.resolveNakamaJoinMatchId
+
+import com.locxx.app.nakama.normalizeNakamaConnection
+
 import androidx.lifecycle.AndroidViewModel
 
 import androidx.lifecycle.viewModelScope
@@ -329,6 +341,12 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
 
 
+    private val _nakamaMatchId = MutableStateFlow<String?>(null)
+
+    val nakamaMatchId: StateFlow<String?> = _nakamaMatchId.asStateFlow()
+
+
+
     private val _sessionDisplayName = MutableStateFlow("")
 
 
@@ -440,6 +458,13 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
 
 
+    /** When true, multiplayer uses [nakama] instead of LAN host/client. */
+    private var useNakama: Boolean = false
+
+    private var nakama: LocxxNakamaSession? = null
+
+
+
     private val listener = object : LanGamingListener {
 
         override fun onPeerConnected(address: String, playerId: Int, displayName: String) {
@@ -472,19 +497,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (_hostHasStartedLanPlay.value) {
 
-                    val h = host ?: return
-
-                    h.broadcast(
-
-                        ProtocolCodec.encodeFrame(
-
-                            WireMessageType.APP_PAYLOAD,
-
-                            GameMessageCodec.encodeGameStarted()
-
-                        )
-
-                    )
+                    multiplayerEmitAppPayload(GameMessageCodec.encodeGameStarted())
 
                 }
 
@@ -512,60 +525,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
                 runCatching {
 
-                    val root = GameMessageCodec.decodeAppPayload(payload)
-
-                    val kind = root.getString("kind")
-
-                    if (_role.value == Role.Host && kind.startsWith("intent_")) {
-
-                        handleHostRemoteIntent(address, root)
-
-                        return@runCatching
-
-                    }
-
-                    when (kind) {
-
-                        "game_started" -> {
-
-                            if (_role.value == Role.Client) {
-
-                                _lanSessionPlayStarted.value = true
-
-                            }
-
-                        }
-
-                        "host_exited" -> {
-
-                            if (_role.value == Role.Client) {
-
-                                val hostLabel = _joinSessionHostDisplayName.value.trim().ifBlank {
-
-                                    _lanPlayerDisplayNames.value.getOrNull(0)?.trim().orEmpty()
-
-                                }.ifBlank { "The host" }
-
-                                _joinAwaitingHostStart.value = false
-
-                                _joinSessionHostDisplayName.value = ""
-
-                                _hostEndedSessionMessage.value =
-                                    "$hostLabel is no longer hosting."
-
-                                stopAll(preserveHostEndedMessage = true)
-
-                            }
-
-                        }
-
-                        "game_state" -> applyIncomingGameState(root)
-
-                        "roll" -> applyIncomingRoll(root)
-
-                        else -> appendLog("app msg $kind")
-
-                    }
+                    handleIncomingAppPayload(payload, nakamaSenderUserId = null, lanRemoteAddress = address)
 
                 }.onFailure { appendLog("parse error ${it.message}") }
 
@@ -578,6 +538,250 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         override fun onError(message: String) {
 
             appendLog("error: $message")
+
+        }
+
+    }
+
+
+
+    private fun shouldIgnoreNakamaEcho(kind: String, nakamaSenderUserId: String?): Boolean {
+
+        if (!useNakama) return false
+
+        val self = nakama?.selfUserId?.takeIf { it.isNotBlank() } ?: return false
+
+        if (nakamaSenderUserId != self) return false
+
+        if (kind.startsWith("intent_")) return true
+
+        return when (kind) {
+
+            "game_state", "roll", "game_started", "nakama_meta" -> true
+
+            else -> false
+
+        }
+
+    }
+
+
+
+    private fun handleIncomingAppPayload(
+
+        payload: ByteArray,
+
+        nakamaSenderUserId: String?,
+
+        lanRemoteAddress: String?
+
+    ) {
+
+        val root = GameMessageCodec.decodeAppPayload(payload)
+
+        val kind = root.getString("kind")
+
+        if (shouldIgnoreNakamaEcho(kind, nakamaSenderUserId)) return
+
+        val intentPeerLabel = nakamaSenderUserId ?: lanRemoteAddress ?: "peer"
+
+        if (_role.value == Role.Host && kind.startsWith("intent_")) {
+
+            handleHostRemoteIntent(intentPeerLabel, root)
+
+            return
+
+        }
+
+        when (kind) {
+
+            "nakama_meta" -> {
+
+                if (_role.value == Role.Client && useNakama) {
+
+                    val body = root.getJSONObject("body")
+
+                    val ja = body.getJSONArray("seatUserIds")
+
+                    val seats = List(ja.length()) { ja.getString(it) }
+
+                    val myId = nakama?.selfUserId ?: return
+
+                    val idx = seats.indexOf(myId)
+
+                    if (idx >= 0) _localPlayerIndex.value = idx
+
+                    rebuildNakamaPeersForClient(seats, myId)
+
+                }
+
+            }
+
+            "game_started" -> {
+
+                if (_role.value == Role.Client) {
+
+                    _lanSessionPlayStarted.value = true
+
+                }
+
+            }
+
+            "host_exited" -> {
+
+                if (_role.value == Role.Client) {
+
+                    val hostLabel = _joinSessionHostDisplayName.value.trim().ifBlank {
+
+                        _lanPlayerDisplayNames.value.getOrNull(0)?.trim().orEmpty()
+
+                    }.ifBlank { "The host" }
+
+                    _joinAwaitingHostStart.value = false
+
+                    _joinSessionHostDisplayName.value = ""
+
+                    _hostEndedSessionMessage.value =
+
+                        "$hostLabel is no longer hosting."
+
+                    stopAll(preserveHostEndedMessage = true)
+
+                }
+
+            }
+
+            "game_state" -> applyIncomingGameState(root)
+
+            "roll" -> applyIncomingRoll(root)
+
+            else -> appendLog("app msg $kind")
+
+        }
+
+    }
+
+
+
+    private fun multiplayerTransportOrNull(): GameTransport? = when {
+
+        useNakama && nakama != null -> GameTransport { nakama!!.sendAppPayload(it) }
+
+        _role.value == Role.Host && host != null -> GameTransport {
+
+            host!!.broadcast(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, it))
+
+        }
+
+        _role.value == Role.Client && client != null -> GameTransport {
+
+            client!!.sendFrame(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, it))
+
+        }
+
+        else -> null
+
+    }
+
+
+
+    private fun multiplayerEmitAppPayload(payload: ByteArray) {
+
+        multiplayerTransportOrNull()?.publishAppPayload(payload)
+
+    }
+
+
+
+    private fun multiplayerHostBroadcastHostExited() {
+
+        val payload = GameMessageCodec.encodeHostExited()
+
+        if (useNakama) {
+
+            nakama?.sendAppPayload(payload)
+
+        } else {
+
+            val h = host ?: return
+
+            h.broadcast(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload))
+
+        }
+
+    }
+
+
+
+    private fun rebuildNakamaPeersForHost(orderedAllSeats: List<String>, self: String) {
+
+        _peers.value = orderedAllSeats.mapNotNull { uid ->
+
+            if (uid == self) null
+
+            else {
+
+                val seat = orderedAllSeats.indexOf(uid)
+
+                UiPeer("nakama:$uid", seat, "Player ${seat + 1}")
+
+            }
+
+        }
+
+    }
+
+
+
+    private fun rebuildNakamaPeersForClient(orderedAllSeats: List<String>, self: String) {
+
+        _peers.value = orderedAllSeats.mapNotNull { uid ->
+
+            if (uid == self) null
+
+            else {
+
+                val seat = orderedAllSeats.indexOf(uid)
+
+                UiPeer("nakama:$uid", seat, "Player ${seat + 1}")
+
+            }
+
+        }
+
+    }
+
+
+
+    private fun nakamaHostOnPresenceUserIds(ids: List<String>) {
+
+        if (_role.value != Role.Host || !useNakama) return
+
+        val self = nakama?.selfUserId ?: return
+
+        val distinct = ids.distinct()
+
+        if (!distinct.contains(self)) return
+
+        val ordered = listOf(self) + distinct.filter { it != self }.sorted()
+
+        val n = ordered.size
+
+        _match.value = initialMatchState(n)
+
+        rebuildNakamaPeersForHost(ordered, self)
+
+        val meta = GameMessageCodec.encodeNakamaMeta(self, ordered)
+
+        multiplayerEmitAppPayload(meta)
+
+        val st = _match.value ?: return
+
+        broadcastGameState(st)
+
+        if (_hostHasStartedLanPlay.value) {
+
+            multiplayerEmitAppPayload(GameMessageCodec.encodeGameStarted())
 
         }
 
@@ -628,6 +832,173 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
             appendLog("host started — players on same Wi‑Fi can join automatically")
 
             _match.value = initialMatchState(1)
+
+        }
+
+    }
+
+
+
+    /** Internet (Nakama): create a private match; share [nakamaMatchId] for joiners. */
+    fun startNakamaHost(displayName: String) {
+
+        stopAll()
+
+        useNakama = true
+
+        _sessionDisplayName.value = displayName
+
+        _role.value = Role.Host
+
+        _localPlayerIndex.value = 0
+
+        val main = Handler(Looper.getMainLooper())
+
+        val ctx = getApplication<Application>().applicationContext
+
+        nakama = LocxxNakamaSession(
+
+            serverKey = BuildConfig.NAKAMA_SERVER_KEY,
+
+            host = BuildConfig.NAKAMA_HOST,
+
+            port = BuildConfig.NAKAMA_PORT,
+
+            useSsl = BuildConfig.NAKAMA_USE_SSL,
+
+            deviceId = ctx.locxxNakamaDeviceId(),
+
+            mainHandler = main,
+
+            onError = { msg -> appendLog("nakama: $msg") },
+
+            onAppPayload = { sender, bytes ->
+
+                viewModelScope.launch {
+
+                    runCatching {
+
+                        handleIncomingAppPayload(bytes, nakamaSenderUserId = sender, lanRemoteAddress = null)
+
+                    }.onFailure { appendLog("parse error ${it.message}") }
+
+                }
+
+            },
+
+            onPresenceUserIds = { ids -> nakamaHostOnPresenceUserIds(ids) }
+
+        )
+
+        val nc = normalizeNakamaConnection(
+
+            BuildConfig.NAKAMA_HOST,
+
+            BuildConfig.NAKAMA_PORT,
+
+            BuildConfig.NAKAMA_USE_SSL
+
+        )
+
+        appendLog("connecting to Nakama at ${nc.host}:${nc.port} (ssl=${nc.useSsl})…")
+
+        nakama!!.startHost(displayName.trim()) { roomCode ->
+
+            _nakamaMatchId.value = roomCode
+
+            appendLog("online room code (share): $roomCode")
+
+        }
+
+    }
+
+
+
+    /** Internet (Nakama): join an existing match by id (from the host). */
+    fun joinNakamaMatch(displayName: String, matchId: String) {
+
+        if (_role.value == Role.Host) {
+
+            appendLog("cannot join a match while hosting")
+
+            return
+
+        }
+
+        val raw = matchId.trim()
+
+        if (raw.isEmpty()) {
+
+            appendLog("enter a room code")
+
+            return
+
+        }
+
+        val mid =
+            resolveNakamaJoinMatchId(raw)
+                ?: run {
+                    appendLog("invalid room code (need ${LOCXX_NAKAMA_ROOM_CODE_LEN} letters/digits, e.g. ABC123)")
+                    return
+                }
+
+        stopAll()
+
+        useNakama = true
+
+        _sessionDisplayName.value = displayName
+
+        _role.value = Role.Client
+
+        _localPlayerIndex.value = 0
+
+        _nakamaMatchId.value = null
+
+        _joinAwaitingHostStart.value = true
+
+        val main = Handler(Looper.getMainLooper())
+
+        val ctx = getApplication<Application>().applicationContext
+
+        nakama = LocxxNakamaSession(
+
+            serverKey = BuildConfig.NAKAMA_SERVER_KEY,
+
+            host = BuildConfig.NAKAMA_HOST,
+
+            port = BuildConfig.NAKAMA_PORT,
+
+            useSsl = BuildConfig.NAKAMA_USE_SSL,
+
+            deviceId = ctx.locxxNakamaDeviceId(),
+
+            mainHandler = main,
+
+            onError = { msg -> appendLog("nakama: $msg") },
+
+            onAppPayload = { sender, bytes ->
+
+                viewModelScope.launch {
+
+                    runCatching {
+
+                        handleIncomingAppPayload(bytes, nakamaSenderUserId = sender, lanRemoteAddress = null)
+
+                    }.onFailure { appendLog("parse error ${it.message}") }
+
+                }
+
+            },
+
+            onPresenceUserIds = { }
+
+        )
+
+        appendLog("joining Nakama match…")
+
+        nakama!!.startClient(displayName.trim(), mid) {
+
+            appendLog("joined online match")
 
         }
 
@@ -817,23 +1188,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         if (_peers.value.isNotEmpty()) {
 
-            runCatching {
-
-                val h = host ?: return@runCatching
-
-                h.broadcast(
-
-                    ProtocolCodec.encodeFrame(
-
-                        WireMessageType.APP_PAYLOAD,
-
-                        GameMessageCodec.encodeHostExited()
-
-                    )
-
-                )
-
-            }
+            runCatching { multiplayerHostBroadcastHostExited() }
 
         }
 
@@ -922,23 +1277,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         if (_role.value == Role.Host) {
 
-            runCatching {
-
-                val h = host ?: return@runCatching
-
-                h.broadcast(
-
-                    ProtocolCodec.encodeFrame(
-
-                        WireMessageType.APP_PAYLOAD,
-
-                        GameMessageCodec.encodeHostExited()
-
-                    )
-
-                )
-
-            }
+            runCatching { multiplayerHostBroadcastHostExited() }
 
         }
 
@@ -957,6 +1296,14 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         client?.disconnect()
 
         client = null
+
+        nakama?.close()
+
+        nakama = null
+
+        useNakama = false
+
+        _nakamaMatchId.value = null
 
         _peers.value = emptyList()
 
@@ -1332,19 +1679,13 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         if (_role.value != Role.Host) return
 
-        val h = host ?: return
+        if (!useNakama && host == null) return
+
+        if (useNakama && nakama == null) return
 
         _hostHasStartedLanPlay.value = true
 
-        val frame = ProtocolCodec.encodeFrame(
-
-            WireMessageType.APP_PAYLOAD,
-
-            GameMessageCodec.encodeGameStarted()
-
-        )
-
-        h.broadcast(frame)
+        multiplayerEmitAppPayload(GameMessageCodec.encodeGameStarted())
 
         appendLog("game started (broadcast to clients)")
 
@@ -1460,13 +1801,13 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         if (!canStartMultiplayerRoll()) return
 
-        val c = client ?: return
+        if (!useNakama && client == null) return
+
+        if (useNakama && nakama == null) return
 
         val payload = GameMessageCodec.encodeIntent(_localPlayerIndex.value, "roll", JSONObject())
 
-        val frame = ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload)
-
-        c.sendFrame(frame)
+        multiplayerEmitAppPayload(payload)
 
     }
 
@@ -1511,7 +1852,11 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
     /** Host-only: broadcast a specific roll (normal or debug rigged). */
     private fun performAuthoritativeRollWithRoll(roll: DiceRoll, cid: Int) {
 
-        val h = host ?: return
+        if (_role.value != Role.Host) return
+
+        if (!useNakama && host == null) return
+
+        if (useNakama && nakama == null) return
 
         val state = _match.value ?: return
 
@@ -1527,9 +1872,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val payload = GameMessageCodec.encodeRoll(roll, state.activePlayerIndex, cid)
 
-        val frame = ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload)
-
-        h.broadcast(frame)
+        multiplayerEmitAppPayload(payload)
 
         broadcastGameState(_match.value!!)
 
@@ -1683,7 +2026,9 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         if (!canStartMultiplayerRoll()) return
 
-        val c = client ?: return
+        if (!useNakama && client == null) return
+
+        if (useNakama && nakama == null) return
 
         when (slot) {
 
@@ -1703,7 +2048,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
                 val payload = GameMessageCodec.encodeIntent(_localPlayerIndex.value, "debug_roll", body)
 
-                c.sendFrame(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload))
+                multiplayerEmitAppPayload(payload)
 
                 appendLog("debug: requested rigged roll for ${row.name} lock")
 
@@ -2565,7 +2910,9 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendAckWhiteIntent() {
 
-        val c = client ?: return
+        if (!useNakama && client == null) return
+
+        if (useNakama && nakama == null) return
 
         val state = _match.value ?: return
 
@@ -2583,7 +2930,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val payload = GameMessageCodec.encodeIntent(idx, "ack_white", body)
 
-        c.sendFrame(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload))
+        multiplayerEmitAppPayload(payload)
 
     }
 
@@ -2678,9 +3025,11 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val sheet = state.playerSheets[localIdx]
 
-        val mpLan = _role.value == Role.Host || _role.value == Role.Client
+        val mpMultiplayer = (_role.value == Role.Host || _role.value == Role.Client) &&
 
-        if (mpLan) {
+            (useNakama || host != null || client != null)
+
+        if (mpMultiplayer) {
 
             _legalMoves.value = multiplayerLegalMovesForSeat(state, list, localIdx)
 
@@ -3658,7 +4007,9 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendEndTurnIntent() {
 
-        val c = client ?: return
+        if (!useNakama && client == null) return
+
+        if (useNakama && nakama == null) return
 
         val state = _match.value ?: return
 
@@ -3676,7 +4027,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val payload = GameMessageCodec.encodeIntent(idx, "end_turn", body)
 
-        c.sendFrame(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload))
+        multiplayerEmitAppPayload(payload)
 
     }
 
@@ -3708,9 +4059,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         refreshLegalMoves()
 
-        val h = host
-
-        if (h != null) {
+        if (_role.value == Role.Host && (useNakama || host != null)) {
 
             broadcastGameState(synced)
 
@@ -4199,7 +4548,8 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
     private fun sendLockReadyHintToHost() {
         if (_role.value != Role.Client) return
         if (_resolutionByPlayer.value == null) return
-        val c = client ?: return
+        if (!useNakama && client == null) return
+        if (useNakama && nakama == null) return
         val state = _match.value ?: return
         val idx = _localPlayerIndex.value
         val sheet = state.playerSheets.getOrNull(idx) ?: return
@@ -4208,7 +4558,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
         rows.sortedBy { it.ordinal }.forEach { ja.put(it.name) }
         val body = JSONObject().put("rows", ja)
         val payload = GameMessageCodec.encodeIntent(idx, "lock_ready", body)
-        c.sendFrame(ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload))
+        multiplayerEmitAppPayload(payload)
     }
 
     private fun broadcastGameState(state: MatchState) {
@@ -4235,7 +4585,9 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
         val wireNames = playerNamesForLanBroadcast(state)
 
-        val h = host ?: return
+        if (!useNakama && host == null) return
+
+        if (useNakama && nakama == null) return
 
         val list = _resolutionByPlayer.value
 
@@ -4283,9 +4635,7 @@ class LocXXViewModel(application: Application) : AndroidViewModel(application) {
 
             }
 
-        val frame = ProtocolCodec.encodeFrame(WireMessageType.APP_PAYLOAD, payload)
-
-        h.broadcast(frame)
+        multiplayerEmitAppPayload(payload)
 
     }
 

@@ -53,6 +53,21 @@ object GameMessageCodec {
         return encodeAppPayload(json)
     }
 
+    /**
+     * Nakama: host orders seats (index 0 = session host). Clients set [LocXXViewModel] local index from this.
+     */
+    fun encodeNakamaMeta(hostUserId: String, seatUserIds: List<String>): ByteArray {
+        val ja = JSONArray()
+        seatUserIds.forEach { ja.put(it) }
+        val body = JSONObject()
+            .put("hostUserId", hostUserId)
+            .put("seatUserIds", ja)
+        val json = JSONObject()
+        json.put("kind", "nakama_meta")
+        json.put("body", body)
+        return encodeAppPayload(json)
+    }
+
     /** Host is stopping the session; clients should disconnect and return to the menu. */
     fun encodeHostExited(): ByteArray {
         val json = JSONObject()

@@ -180,7 +180,10 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
     val joinHostPrompt by vm.joinHostPrompt.collectAsState()
     val joinAwaitingHostStart by vm.joinAwaitingHostStart.collectAsState()
     val joinSessionHostDisplayName by vm.joinSessionHostDisplayName.collectAsState()
+    val nakamaMatchId by vm.nakamaMatchId.collectAsState()
     val context = LocalContext.current
+    var showJoinOnlineDialog by remember { mutableStateOf(false) }
+    var joinOnlineMatchIdField by remember { mutableStateOf("") }
 
     DisposableEffect(Unit) {
         val activity = context as? Activity
@@ -260,25 +263,20 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
             peers = peers,
             role = role,
             showJoinSearching = role == LocXXViewModel.Role.JoinSearching && joinHostPrompt == null,
-            onStartHostedGame = {
-                vm.broadcastLanGameStarted()
-                showGameStartingCountdown = true
-            },
-            onHostGame = {
+            nakamaMatchId = nakamaMatchId,
+            onHostOnlineGame = {
+                gameBoardOpen = false
+                showGameStartingCountdown = false
                 val chosen = displayNameForNewSession(name)
                 if (chosen != name) {
                     name = chosen
                     context.applicationContext.saveDisplayName(chosen)
                 }
-                vm.startHost(chosen)
+                vm.startNakamaHost(chosen)
             },
-            onJoinGame = {
-                val chosen = displayNameForNewSession(name)
-                if (chosen != name) {
-                    name = chosen
-                    context.applicationContext.saveDisplayName(chosen)
-                }
-                vm.startJoinHostDiscovery(chosen)
+            onJoinOnlineGame = {
+                joinOnlineMatchIdField = ""
+                showJoinOnlineDialog = true
             },
             onCancelJoinSearch = { vm.cancelJoinHostFlow() },
             onStopHosting = { vm.stopHostingLobby() },
@@ -293,6 +291,44 @@ fun LocXXScreen(vm: LocXXViewModel = viewModel()) {
             onExitApp = {
                 vm.stopAll()
                 (context as? Activity)?.finish()
+            }
+        )
+    }
+
+    if (showJoinOnlineDialog) {
+        AlertDialog(
+            onDismissRequest = { showJoinOnlineDialog = false },
+            title = { Text("Join online game") },
+            text = {
+                OutlinedTextField(
+                    value = joinOnlineMatchIdField,
+                    onValueChange = { joinOnlineMatchIdField = it },
+                    label = { Text("Room code") },
+                    placeholder = { Text("6 letters/digits from host") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showJoinOnlineDialog = false
+                        val chosen = displayNameForNewSession(name)
+                        if (chosen != name) {
+                            name = chosen
+                            context.applicationContext.saveDisplayName(chosen)
+                        }
+                        vm.joinNakamaMatch(chosen, joinOnlineMatchIdField.trim())
+                    },
+                    enabled = joinOnlineMatchIdField.trim().isNotEmpty(),
+                ) {
+                    Text("Join")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showJoinOnlineDialog = false }) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -463,9 +499,9 @@ private fun LocXXLandingContent(
     peers: List<UiPeer>,
     role: LocXXViewModel.Role?,
     showJoinSearching: Boolean,
-    onStartHostedGame: () -> Unit,
-    onHostGame: () -> Unit,
-    onJoinGame: () -> Unit,
+    nakamaMatchId: String?,
+    onHostOnlineGame: () -> Unit,
+    onJoinOnlineGame: () -> Unit,
     onCancelJoinSearch: () -> Unit,
     onStopHosting: () -> Unit,
     onOpenScoreSheet: () -> Unit,
@@ -509,9 +545,9 @@ private fun LocXXLandingContent(
                         role = role,
                         peers = peers,
                         showJoinSearching = showJoinSearching,
-                        onStartHostedGame = onStartHostedGame,
-                        onHostGame = onHostGame,
-                        onJoinGame = onJoinGame,
+                        nakamaMatchId = nakamaMatchId,
+                        onHostOnlineGame = onHostOnlineGame,
+                        onJoinOnlineGame = onJoinOnlineGame,
                         onCancelJoinSearch = onCancelJoinSearch,
                         onStopHosting = onStopHosting,
                         onPlayOffline = onPlayOffline,
@@ -554,9 +590,9 @@ private fun LocXXLandingContent(
                     role = role,
                     peers = peers,
                     showJoinSearching = showJoinSearching,
-                    onStartHostedGame = onStartHostedGame,
-                    onHostGame = onHostGame,
-                    onJoinGame = onJoinGame,
+                    nakamaMatchId = nakamaMatchId,
+                    onHostOnlineGame = onHostOnlineGame,
+                    onJoinOnlineGame = onJoinOnlineGame,
                     onCancelJoinSearch = onCancelJoinSearch,
                     onStopHosting = onStopHosting,
                     onPlayOffline = onPlayOffline,
@@ -598,9 +634,9 @@ private fun LocLandingBrandingAndControls(
     role: LocXXViewModel.Role?,
     peers: List<UiPeer>,
     showJoinSearching: Boolean,
-    onStartHostedGame: () -> Unit,
-    onHostGame: () -> Unit,
-    onJoinGame: () -> Unit,
+    nakamaMatchId: String?,
+    onHostOnlineGame: () -> Unit,
+    onJoinOnlineGame: () -> Unit,
     onCancelJoinSearch: () -> Unit,
     onStopHosting: () -> Unit,
     onPlayOffline: () -> Unit,
@@ -623,16 +659,8 @@ private fun LocLandingBrandingAndControls(
         role == null ||
             role == LocXXViewModel.Role.Host ||
             role == LocXXViewModel.Role.SinglePlayer
-    val hostPrimaryLabel =
-        if (role == LocXXViewModel.Role.Host && peers.isNotEmpty()) "Start Game" else "Host a Game"
-    val hostPrimaryAction =
-        if (role == LocXXViewModel.Role.Host && peers.isNotEmpty()) onStartHostedGame else onHostGame
-    val hostPrimaryEnabled =
-        when (role) {
-            LocXXViewModel.Role.Host -> peers.isNotEmpty()
-            null, LocXXViewModel.Role.SinglePlayer -> true
-            else -> false
-        }
+    val canUseOnlineButtons =
+        role == null || role == LocXXViewModel.Role.SinglePlayer
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -689,6 +717,50 @@ private fun LocLandingBrandingAndControls(
                 focusedLabelColor = MaterialTheme.colorScheme.primary
             )
         )
+        if (role == LocXXViewModel.Role.Host && !nakamaMatchId.isNullOrBlank()) {
+            Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
+            Card(
+                modifier = Modifier
+                    .widthIn(max = 400.dp)
+                    .fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Room Code",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = nakamaMatchId,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
+                    Text(
+                        text = "Stop hosting",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onStopHosting() }
+                    )
+                }
+            }
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -724,25 +796,6 @@ private fun LocLandingBrandingAndControls(
                     modifier = Modifier.clickable { onCancelJoinSearch() }
                 )
             }
-            if (role == LocXXViewModel.Role.Host) {
-                if (peers.isEmpty()) {
-                    Text(
-                        text = "Waiting for players to join the game...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = if (compact) 4.dp else 6.dp)
-                    )
-                }
-                Text(
-                    text = "Stop hosting",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable { onStopHosting() }
-                )
-            }
         }
         Spacer(Modifier.height(if (compact) 6.dp else 8.dp))
         Column(
@@ -756,29 +809,24 @@ private fun LocLandingBrandingAndControls(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Button(
-                    onClick = hostPrimaryAction,
-                    enabled = canHostOrStart && hostPrimaryEnabled,
+                    onClick = onHostOnlineGame,
+                    enabled = canHostOrStart && canUseOnlineButtons,
                     modifier = Modifier.weight(1f),
-                    colors = btnColors,
+                    colors = secondaryBtn,
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = btnPad
                 ) {
-                    Text(
-                        hostPrimaryLabel,
-                        maxLines = 2,
-                        style = MaterialTheme.typography.labelLarge,
-                        textAlign = TextAlign.Center
-                    )
+                    Text("Host online", maxLines = 2, style = MaterialTheme.typography.labelLarge)
                 }
                 Button(
-                    onClick = onJoinGame,
-                    enabled = role == null || role == LocXXViewModel.Role.SinglePlayer,
+                    onClick = onJoinOnlineGame,
+                    enabled = canUseOnlineButtons,
                     modifier = Modifier.weight(1f),
-                    colors = btnColors,
+                    colors = secondaryBtn,
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = btnPad
                 ) {
-                    Text("Join a Game", maxLines = 2, style = MaterialTheme.typography.labelLarge)
+                    Text("Join online", maxLines = 2, style = MaterialTheme.typography.labelLarge)
                 }
             }
             Row(
